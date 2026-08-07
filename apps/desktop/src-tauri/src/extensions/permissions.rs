@@ -22,82 +22,118 @@ impl PermissionGate {
     pub fn check(
         &self,
         manifest: &ExtensionManifest,
-        workspace_root: &Path,
+        workspace_root: Option<&Path>,
         capability: &str,
         method: &str,
         args: &[Value],
     ) -> Result<(), AppError> {
         match capability {
-            "fs" => self.check_fs(manifest, workspace_root, method, args),
-            "semantic" => self.check_semantic(manifest, workspace_root, method, args),
+            "workspace" => self.check_workspace(manifest, workspace_root, method, args),
+            "embeddings" => self.check_embeddings(manifest, method),
             "ai" => self.check_ai(manifest, method),
             "storage" => self.check_storage(manifest, method),
+            "clipboard" => self.check_clipboard(manifest, method),
+            "preferences" => self.check_preferences(method, args),
             "network" => self.check_network(manifest, method, args),
             _ => deny(format!("unknown capability {capability:?}")),
         }
     }
 
-    fn check_fs(
+    fn check_workspace(
         &self,
         manifest: &ExtensionManifest,
-        workspace_root: &Path,
-        method: &str,
-        args: &[Value],
-    ) -> Result<(), AppError> {
-        let (write, resolution) = match method {
-            "readFile" | "listFiles" => (false, PathResolution::MustExist),
-            "writeFile" => (true, PathResolution::MayCreate),
-            _ => return deny(format!("unknown fs method {method:?}")),
-        };
-        let path = string_arg(args, 0, "path")?;
-        let resolved = resolve_workspace_path(workspace_root, path, resolution)?;
-        if fs_prefix_granted(manifest, write, &resolved.relative_path) {
-            Ok(())
-        } else {
-            deny(format!(
-                "fs.{} is not granted for {}",
-                method, resolved.relative_path
-            ))
-        }
-    }
-
-    fn check_semantic(
-        &self,
-        manifest: &ExtensionManifest,
-        workspace_root: &Path,
+        workspace_root: Option<&Path>,
         method: &str,
         args: &[Value],
     ) -> Result<(), AppError> {
         match method {
-            "search" => {
-                if semantic_granted(manifest, |search, _index| search) {
+            "read" => {
+                let root = workspace_root.ok_or(AppError::NoWorkspace)?;
+                let path = string_arg(args, 0, "path")?;
+                let resolved = resolve_workspace_path(root, path, PathResolution::MustExist)?;
+                if workspace_path_granted(manifest, false, &resolved.relative_path) {
                     Ok(())
                 } else {
-                    deny("semantic.search was not granted")
+                    deny(format!(
+                        "workspace.read is not granted for {}",
+                        resolved.relative_path
+                    ))
                 }
             }
-            "indexNote" => {
-                if !semantic_granted(manifest, |_search, index| index) {
-                    return deny("semantic.indexNote was not granted");
-                }
+            "write" => {
+                let root = workspace_root.ok_or(AppError::NoWorkspace)?;
                 let path = string_arg(args, 0, "path")?;
-                resolve_workspace_path(workspace_root, path, PathResolution::MustExist)?;
-                Ok(())
+                let resolved = resolve_workspace_path(root, path, PathResolution::MayCreate)?;
+                if workspace_path_granted(manifest, true, &resolved.relative_path) {
+                    Ok(())
+                } else {
+                    deny(format!(
+                        "workspace.write is not granted for {}",
+                        resolved.relative_path
+                    ))
+                }
+            }
+            "list" => {
+                if let Some(value) = args.first() {
+                    if !value.is_null() {
+                        let pattern = value.as_str().ok_or_else(|| {
+                            AppError::Denied("missing or invalid globPattern argument".into())
+                        })?;
+                        validate_workspace_request_pattern(pattern)?;
+                    }
+                }
+                require_workspace_read(manifest, "workspace.list")
+            }
+            "search" => {
+                string_arg(args, 0, "query")?;
+                require_workspace_read(manifest, "workspace.search")
+            }
+            "recent" => require_workspace_read(manifest, "workspace.recent"),
+            "findByName" => {
+                string_arg(args, 0, "name")?;
+                require_workspace_read(manifest, "workspace.findByName")
+            }
+            "root" => {
+                if workspace_has_any_grant(manifest) {
+                    Ok(())
+                } else {
+                    deny("workspace.root was not granted")
+                }
+            }
+            _ => deny(format!("unknown workspace method {method:?}")),
+        }
+    }
+
+    fn check_embeddings(&self, manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
+        match method {
+            "query" => {
+                if embeddings_granted(manifest, |query, _write| query) {
+                    Ok(())
+                } else {
+                    deny("embeddings.query was not granted")
+                }
             }
             "status" => {
-                if semantic_granted(manifest, |search, index| search || index) {
+                if embeddings_granted(manifest, |query, write| query || write) {
                     Ok(())
                 } else {
-                    deny("semantic.status was not granted")
+                    deny("embeddings.status was not granted")
                 }
             }
-            _ => deny(format!("unknown semantic method {method:?}")),
+            "reindex" | "clear" => {
+                if embeddings_granted(manifest, |_query, write| write) {
+                    Ok(())
+                } else {
+                    deny(format!("embeddings.{method} was not granted"))
+                }
+            }
+            _ => deny(format!("unknown embeddings method {method:?}")),
         }
     }
 
     fn check_ai(&self, manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
         match method {
-            "chat" => {
+            "ask" | "startStream" | "pollStream" | "cancel" | "models" => {
                 if manifest
                     .permissions
                     .capabilities
@@ -106,7 +142,7 @@ impl PermissionGate {
                 {
                     Ok(())
                 } else {
-                    deny("ai.chat was not granted")
+                    deny(format!("ai.{method} was not granted"))
                 }
             }
             _ => deny(format!("unknown ai method {method:?}")),
@@ -124,14 +160,14 @@ impl PermissionGate {
             });
 
         match method {
-            "get" | "set" => {
+            "get" | "set" | "remove" | "keys" => {
                 if storage.is_some() {
                     Ok(())
                 } else {
                     deny("storage was not granted")
                 }
             }
-            "getShared" | "setShared" => {
+            "getShared" | "setShared" | "removeShared" | "keysShared" => {
                 if storage == Some(true) {
                     Ok(())
                 } else {
@@ -139,6 +175,43 @@ impl PermissionGate {
                 }
             }
             _ => deny(format!("unknown storage method {method:?}")),
+        }
+    }
+
+    fn check_clipboard(&self, manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
+        let granted = manifest
+            .permissions
+            .capabilities
+            .iter()
+            .any(|grant| match grant {
+                CapabilityGrant::Clipboard { read, write } => match method {
+                    "copy" => *write,
+                    "read" => *read,
+                    _ => false,
+                },
+                _ => false,
+            });
+
+        match method {
+            "copy" | "read" => {
+                if granted {
+                    Ok(())
+                } else {
+                    deny(format!("clipboard.{method} was not granted"))
+                }
+            }
+            _ => deny(format!("unknown clipboard method {method:?}")),
+        }
+    }
+
+    fn check_preferences(&self, method: &str, args: &[Value]) -> Result<(), AppError> {
+        match method {
+            "all" => Ok(()),
+            "get" => {
+                string_arg(args, 0, "name")?;
+                Ok(())
+            }
+            _ => deny(format!("unknown preferences method {method:?}")),
         }
     }
 
@@ -272,9 +345,13 @@ fn string_arg<'a>(args: &'a [Value], index: usize, label: &str) -> Result<&'a st
         .ok_or_else(|| AppError::Denied(format!("missing or invalid {label} argument")))
 }
 
-fn fs_prefix_granted(manifest: &ExtensionManifest, write: bool, relative_path: &str) -> bool {
+pub(crate) fn workspace_path_granted(
+    manifest: &ExtensionManifest,
+    write: bool,
+    relative_path: &str,
+) -> bool {
     manifest.permissions.capabilities.iter().any(|grant| {
-        let CapabilityGrant::Fs {
+        let CapabilityGrant::Workspace {
             read,
             write: writes,
         } = grant
@@ -288,22 +365,51 @@ fn fs_prefix_granted(manifest: &ExtensionManifest, write: bool, relative_path: &
     })
 }
 
-fn semantic_granted(manifest: &ExtensionManifest, predicate: impl Fn(bool, bool) -> bool) -> bool {
+pub(crate) fn workspace_has_read_grant(manifest: &ExtensionManifest) -> bool {
+    manifest
+        .permissions
+        .capabilities
+        .iter()
+        .any(|grant| matches!(grant, CapabilityGrant::Workspace { read, .. } if !read.is_empty()))
+}
+
+fn workspace_has_any_grant(manifest: &ExtensionManifest) -> bool {
+    manifest.permissions.capabilities.iter().any(|grant| {
+        matches!(
+            grant,
+            CapabilityGrant::Workspace { read, write } if !read.is_empty() || !write.is_empty()
+        )
+    })
+}
+
+fn require_workspace_read(manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
+    if workspace_has_read_grant(manifest) {
+        Ok(())
+    } else {
+        deny(format!("{method} was not granted"))
+    }
+}
+
+fn embeddings_granted(
+    manifest: &ExtensionManifest,
+    predicate: impl Fn(bool, bool) -> bool,
+) -> bool {
     manifest
         .permissions
         .capabilities
         .iter()
         .any(|grant| match grant {
-            CapabilityGrant::Semantic { search, index } => predicate(*search, *index),
+            CapabilityGrant::Embeddings { query, write } => predicate(*query, *write),
             _ => false,
         })
 }
 
-fn permission_pattern_matches(pattern: &str, relative_path: &str) -> bool {
+pub(crate) fn permission_pattern_matches(pattern: &str, relative_path: &str) -> bool {
     let pattern = normalize_pattern(pattern);
     if pattern == "**" || pattern == "**/*" {
         return true;
     }
+
     let relative_path = relative_path.trim_matches('/');
     if !pattern.contains('*') && !pattern.contains('?') {
         return relative_path == pattern
@@ -320,6 +426,21 @@ fn permission_pattern_matches(pattern: &str, relative_path: &str) -> bool {
         .filter(|segment| !segment.is_empty())
         .collect();
     glob_segments_match(&pattern_segments, &path_segments)
+}
+
+fn validate_workspace_request_pattern(pattern: &str) -> Result<(), AppError> {
+    let normalized = normalize_pattern(pattern);
+    let path = Path::new(&normalized);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return deny(format!(
+            "workspace.list pattern {pattern:?} must be workspace-relative"
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_pattern(pattern: &str) -> String {
@@ -410,11 +531,12 @@ mod tests {
                 uses_services: Vec::new(),
                 provides_services: Vec::new(),
             },
+            preferences: Vec::new(),
         }
     }
 
-    fn fs_manifest(read: Vec<&str>, write: Vec<&str>) -> ExtensionManifest {
-        manifest(vec![CapabilityGrant::Fs {
+    fn workspace_manifest(read: Vec<&str>, write: Vec<&str>) -> ExtensionManifest {
+        manifest(vec![CapabilityGrant::Workspace {
             read: read.into_iter().map(str::to_string).collect(),
             write: write.into_iter().map(str::to_string).collect(),
         }])
@@ -425,7 +547,13 @@ mod tests {
         let dir = temp_dir();
         let gate = PermissionGate;
         let err = gate
-            .check(&manifest(Vec::new()), dir.path(), "unknown", "method", &[])
+            .check(
+                &manifest(Vec::new()),
+                Some(dir.path()),
+                "unknown",
+                "method",
+                &[],
+            )
             .unwrap_err();
 
         assert!(err.to_string().starts_with("denied: "));
@@ -437,8 +565,8 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                dir.path(),
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(dir.path()),
                 "shell",
                 "run",
                 &[],
@@ -454,15 +582,15 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                dir.path(),
-                "fs",
-                "deleteFile",
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(dir.path()),
+                "workspace",
+                "delete",
                 &[json!("note.md")],
             )
             .unwrap_err();
 
-        assert!(err.to_string().contains("unknown fs method"));
+        assert!(err.to_string().contains("unknown workspace method"));
     }
 
     #[test]
@@ -473,9 +601,9 @@ mod tests {
         let err = gate
             .check(
                 &manifest(Vec::new()),
-                dir.path(),
-                "fs",
-                "readFile",
+                Some(dir.path()),
+                "workspace",
+                "read",
                 &[json!("note.md")],
             )
             .unwrap_err();
@@ -491,10 +619,10 @@ mod tests {
         let gate = PermissionGate;
 
         gate.check(
-            &fs_manifest(vec!["notes/**"], vec![]),
-            dir.path(),
-            "fs",
-            "readFile",
+            &workspace_manifest(vec!["notes/**"], vec![]),
+            Some(dir.path()),
+            "workspace",
+            "read",
             &[json!("notes/note.md")],
         )
         .unwrap();
@@ -508,10 +636,10 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["notes/**"], vec![]),
-                dir.path(),
-                "fs",
-                "readFile",
+                &workspace_manifest(vec!["notes/**"], vec![]),
+                Some(dir.path()),
+                "workspace",
+                "read",
                 &[json!("private/secret.md")],
             )
             .unwrap_err();
@@ -530,10 +658,10 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                &workspace,
-                "fs",
-                "readFile",
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(&workspace),
+                "workspace",
+                "read",
                 &[json!("../outside/secret.md")],
             )
             .unwrap_err();
@@ -553,10 +681,10 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                &workspace,
-                "fs",
-                "readFile",
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(&workspace),
+                "workspace",
+                "read",
                 &[json!(secret.to_string_lossy())],
             )
             .unwrap_err();
@@ -579,10 +707,10 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                &workspace,
-                "fs",
-                "readFile",
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(&workspace),
+                "workspace",
+                "read",
                 &[json!("link/secret.md")],
             )
             .unwrap_err();
@@ -602,10 +730,10 @@ mod tests {
         let gate = PermissionGate;
         let err = gate
             .check(
-                &fs_manifest(vec!["**"], vec![]),
-                &workspace,
-                "fs",
-                "readFile",
+                &workspace_manifest(vec!["**"], vec![]),
+                Some(&workspace),
+                "workspace",
+                "read",
                 &[json!(secret.to_string_lossy())],
             )
             .unwrap_err();
@@ -620,37 +748,32 @@ mod tests {
         let gate = PermissionGate;
 
         gate.check(
-            &fs_manifest(vec![], vec!["notes/**"]),
-            dir.path(),
-            "fs",
-            "writeFile",
+            &workspace_manifest(vec![], vec!["notes/**"]),
+            Some(dir.path()),
+            "workspace",
+            "write",
             &[json!("notes/new.md"), json!("new note")],
         )
         .unwrap();
     }
 
     #[test]
-    fn semantic_index_note_path_must_stay_inside_workspace() {
-        let base = temp_dir();
-        let workspace = base.path().join("workspace");
-        let outside = base.path().join("outside");
-        fs::create_dir(&workspace).unwrap();
-        fs::create_dir(&outside).unwrap();
-        fs::write(outside.join("secret.md"), "secret").unwrap();
+    fn embeddings_reindex_requires_write_grant() {
+        let dir = temp_dir();
         let gate = PermissionGate;
         let err = gate
             .check(
-                &manifest(vec![CapabilityGrant::Semantic {
-                    search: false,
-                    index: true,
+                &manifest(vec![CapabilityGrant::Embeddings {
+                    query: true,
+                    write: false,
                 }]),
-                &workspace,
-                "semantic",
-                "indexNote",
-                &[json!("../outside/secret.md")],
+                Some(dir.path()),
+                "embeddings",
+                "reindex",
+                &[],
             )
             .unwrap_err();
 
-        assert!(err.to_string().contains("outside the workspace"));
+        assert!(err.to_string().contains("was not granted"));
     }
 }

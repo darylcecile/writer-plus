@@ -218,6 +218,14 @@ impl VectorStore {
         Ok(())
     }
 
+    pub fn clear_all(&self) -> Result<(), AppError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM vec_chunks", [])?;
+        conn.execute("DELETE FROM note_meta", [])?;
+        conn.execute("DELETE FROM chunk_seq", [])?;
+        Ok(())
+    }
+
     // ── Search ────────────────────────────────────────────────────────────────
 
     /// Return the `limit` nearest chunks to `query_embedding`, ordered by

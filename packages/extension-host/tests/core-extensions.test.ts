@@ -14,73 +14,28 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import releaseSync from "@jitl/quickjs-wasmfile-release-sync";
 import type { QuickJSWASMModule } from "quickjs-emscripten-core";
-import { build } from "esbuild";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ExtensionManager, type CapabilityBroker } from "../src/manager";
+import { bundleExtension } from "../src/bundler";
 import type { CapabilityRequest, HostNode, HostTree } from "@writer/extension-api/protocol";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
-const apiSrc = join(repoRoot, "packages", "extension-api", "src");
 
 let wasm: QuickJSWASMModule;
 const bundles: Record<string, string> = {};
 
-/**
- * Bundle an extension the way the real pipeline will.
- *
- * The entry re-exports the extension's default command map through
- * `guest.register`, which is what the host calls into. Written inside the api
- * package so `react` resolves through the workspace, matching a real build.
- */
-async function bundleExtension(name: string, entrySource: string): Promise<string> {
-  const dir = await mkdtemp(join(apiSrc, "..", `.ext-${name}-`));
-  const entry = join(dir, "entry.jsx");
-  const out = join(dir, "bundle.js");
-  await writeFile(entry, entrySource, "utf8");
-
-  await build({
-    entryPoints: [entry],
-    bundle: true,
-    outfile: out,
-    format: "iife",
-    platform: "neutral",
-    target: "es2020",
-    jsx: "automatic",
-    jsxImportSource: join(apiSrc, ".."),
-    define: { "process.env.NODE_ENV": '"production"' },
-    mainFields: ["module", "main"],
-    conditions: ["import", "default"],
-    logLevel: "silent",
-  });
-
-  const code = await readFile(out, "utf8");
-  await rm(dir, { recursive: true, force: true });
-  return code;
-}
-
 beforeAll(async () => {
   wasm = await newQuickJSWASMModuleFromVariant(releaseSync);
 
-  bundles["writer.semantic-index"] = await bundleExtension(
-    "semantic-index",
-    `
-      import mod from "${join(repoRoot, "extensions", "semantic-index", "src", "index")}";
-      import { guest } from "${apiSrc}/runtime/index";
-      guest.register(mod);
-    `,
-  );
+  bundles["writer.semantic-index"] = await bundleExtension({
+    entryPoint: join(repoRoot, "extensions", "semantic-index", "src", "index.tsx"),
+  });
 
-  bundles["writer.ai-chat"] = await bundleExtension(
-    "ai-chat",
-    `
-      import mod from "${join(repoRoot, "extensions", "ai-chat", "src", "index")}";
-      import { guest } from "${apiSrc}/runtime/index";
-      guest.register(mod);
-    `,
-  );
+  bundles["writer.ai-chat"] = await bundleExtension({
+    entryPoint: join(repoRoot, "extensions", "ai-chat", "src", "index.tsx"),
+  });
 }, 180_000);
 
 /** Collects every node of a given type from a committed tree. */

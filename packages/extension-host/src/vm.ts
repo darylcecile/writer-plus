@@ -123,8 +123,36 @@ export class ExtensionVm {
       thisVal: unknown,
       ...args: unknown[]
     ): { error?: unknown; value?: unknown };
+    getPromiseState(h: unknown): {
+      type: "fulfilled" | "rejected" | "pending";
+      value?: { dispose(): void; alive: boolean };
+      error?: { dispose(): void; alive: boolean };
+    };
+    getProp(h: unknown, key: string): { dispose(): void; alive: boolean };
+    typeof(h: unknown): string;
   } {
     return this.context as never;
+  }
+
+  /**
+   * Read a human-readable message out of a VM error handle.
+   *
+   * `dump()` is deliberately not used: it does not deep-serialize, so an Error
+   * comes back as the literal string "[object Object]" and the actual failure
+   * is lost. Reading `.message` off the handle is what preserves it, with a
+   * dump only as the last resort for guests that reject with a non-Error.
+   */
+  private readError(handle: unknown): string {
+    const message = this.ctx.getProp(handle, "message");
+    try {
+      if (this.ctx.typeof(message) === "string") {
+        const text = this.ctx.getString(message);
+        if (text) return text;
+      }
+    } finally {
+      message.dispose();
+    }
+    return String(this.ctx.dump(handle));
   }
 
   /**
@@ -245,6 +273,56 @@ export class ExtensionVm {
     if (this.disposed) return;
     // The guest entry point takes the result as a JSON string, not an object.
     this.callGuest("capabilityResult", [callId, JSON.stringify(result)]);
+  }
+
+  /**
+   * Call a guest function that returns a promise, and read its settled value.
+   *
+   * The guest's `service` entry is async, so the immediate return is a VM
+   * promise rather than a string. Draining pending jobs is what actually
+   * advances it: QuickJS does not run promise reactions when the host stack
+   * unwinds, so without the drain the state stays `pending` forever even
+   * though the underlying work has already finished.
+   *
+   * Returns `null` when the promise is still genuinely pending, which happens
+   * when the provider is itself awaiting a host capability. The caller decides
+   * whether that is a failure - here it is not our place to invent a value.
+   */
+  callGuestForResult(method: string, args: JsonValue[] = []): string | null {
+    this.assertAlive();
+    let out: string | null = null;
+
+    this.withBudget(() => {
+      const json = JSON.stringify(args).replace(/</g, "\\u003c");
+      const call = this.ctx.evalCode(
+        `globalThis.__writer_guest.${method}.apply(null, ${json})`,
+        `guest:${method}`,
+      );
+
+      if (call.error) {
+        this.consume(call);
+        return;
+      }
+
+      const promise = call.value as { dispose(): void; alive: boolean };
+      try {
+        this.drainJobs();
+        const state = this.ctx.getPromiseState(promise);
+
+        if (state.type === "fulfilled" && state.value) {
+          out = this.ctx.getString(state.value);
+          state.value.dispose();
+        } else if (state.type === "rejected" && state.error) {
+          const message = this.readError(state.error);
+          state.error.dispose();
+          throw new Error(message);
+        }
+      } finally {
+        promise.dispose();
+      }
+    });
+
+    return out;
   }
 
   /**

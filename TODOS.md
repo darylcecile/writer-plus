@@ -2,6 +2,8 @@
 
 ## In Progress
 
+- Extensions system: [`SPECs/extensions-system-spec.md`](SPECs/extensions-system-spec.md) — **high risk, largest bet in the backlog**. Guest API, QuickJS host, capability broker, Rust permission gate, host-rendered UI primitives, and both core extensions (`semantic-index`, `ai-chat`) are built and test-verified end to end. Remaining: the Copilot bridge (all `ai.*` are `Unavailable` stubs), a real embedding model (the current one is an honest placeholder behind a trait), and install/update from GitHub releases.
+
 - Reveal-in-sidebar + residual external-watcher misses: [`SPECs/reveal-in-sidebar-and-external-watcher-spec.md`](SPECs/reveal-in-sidebar-and-external-watcher-spec.md) — keep the explicit tab-context-menu "Reveal in sidebar" action working, leave ordinary file opens from expanding the Everything tree, and characterize the remaining external-file-watcher miss cases through a logging + manual-repro pass before patching further.
 
 ## Done
@@ -78,7 +80,6 @@ Previously-triaged work organized by phase. Pull into `Up Next` as capacity open
 - [ ] Archive files: [`SPECs/archive-files-spec.md`](SPECs/archive-files-spec.md) — medium risk. Adds a parallel storage area and a purge job.
 - [ ] Multi window (v1 shipped — single-process multi-window): [`SPECs/multi-window-spec.md`](SPECs/multi-window-spec.md). Future work: macOS Window menu listing open workspaces, session restore of all open windows at quit, tab tear-off across windows.
 - [ ] Custom MCP: [`SPECs/custom-mcp-spec.md`](SPECs/custom-mcp-spec.md) — **high risk**. New protocol client, trust model, and tool invocation surface. Overlaps heavily with the extensions system below; decide whether MCP becomes a capability of that system rather than a parallel one.
-- [ ] Extensions system: [`SPECs/extensions-system-spec.md`](SPECs/extensions-system-spec.md) — **high risk, largest bet in the backlog**. TypeScript/React extensions in a QuickJS sandbox, Raycast-style host-rendered UI primitives, Rust-enforced capability permissions, GitHub-release distribution, and an AI Chat core extension on `github-copilot-sdk`. Isolation and React-in-sandbox are spike-verified; ships in six independent phases.
 - [ ] Writer CLI: [`SPECs/writer-cli-spec.md`](SPECs/writer-cli-spec.md) — standalone second binary; can slot in whenever convenient.
 
 #### Performance and resilience

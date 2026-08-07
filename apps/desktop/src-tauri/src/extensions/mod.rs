@@ -33,16 +33,12 @@ pub fn extension_capability(
     }
 
     let workspace_state = app.state::<AppState>().get_or_create(webview.label());
-    let workspace_root = workspace_state
-        .workspace_root
-        .read()
-        .clone()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace_root = workspace_state.workspace_root.read().clone();
 
     let gate = PermissionGate;
     gate.check(
         &installed.manifest,
-        &workspace_root,
+        workspace_root.as_deref(),
         &capability,
         &method,
         &args,
@@ -51,10 +47,11 @@ pub fn extension_capability(
     capabilities::dispatch(
         &extension_id,
         &installed.manifest,
-        &workspace_root,
+        workspace_root.as_deref(),
         &capability,
         &method,
         &args,
+        &webview,
         &app,
     )
 }

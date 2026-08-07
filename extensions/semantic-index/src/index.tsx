@@ -220,15 +220,15 @@ function similarity(distance: number): string {
 async function openNote(path: string): Promise<void> {
   try {
     await workspace.read(path);
-    await showToast({ style: "success", title: "Opened", message: path });
+    showToast({ style: "success", title: "Opened", message: path });
   } catch (err) {
-    await showToast({ style: "failure", title: "Could not open note", message: message(err) });
+    showToast({ style: "failure", title: "Could not open note", message: message(err) });
   }
 }
 
 async function copyPath(path: string): Promise<void> {
   await clipboard.copy(path);
-  await showToast({ style: "success", title: "Path copied" });
+  showToast({ style: "success", title: "Path copied" });
 }
 
 function message(err: unknown): string {

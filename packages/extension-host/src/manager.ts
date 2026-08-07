@@ -110,6 +110,55 @@ export class ExtensionManager {
     });
   }
 
+  /**
+   * Invoke a service method a provider extension registered.
+   *
+   * Returns a CapabilityResult rather than throwing because the caller is
+   * always another extension: a provider that is missing, disabled, or broken
+   * should surface to the consumer as a refusal it can handle, not as an
+   * exception that takes down the consumer's panel too.
+   */
+  callService(
+    instanceId: string,
+    service: string,
+    method: string,
+    args: JsonValue[],
+  ): Promise<CapabilityResult> {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return Promise.resolve({
+        ok: false,
+        code: "unavailable",
+        message: `provider instance ${instanceId} is not running`,
+      });
+    }
+
+    try {
+      const raw = instance.vm.callGuestForResult("service", [
+        service,
+        method,
+        JSON.stringify(args),
+      ]);
+      instance.vm.runTimers();
+
+      if (raw === null) {
+        return Promise.resolve({
+          ok: false,
+          code: "failed",
+          message: `service "${service}.${method}" did not settle synchronously`,
+        });
+      }
+
+      return Promise.resolve(JSON.parse(raw) as CapabilityResult);
+    } catch (err) {
+      return Promise.resolve({
+        ok: false,
+        code: "failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   dispose(instanceId: string): void {
     const instance = this.instances.get(instanceId);
     if (!instance) return;

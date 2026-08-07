@@ -203,7 +203,7 @@ async function search(query: string, limit: number): Promise<SemanticHit[]> {
     // A missing or disabled provider is an expected state, not a crash: the
     // user may simply not have enabled Semantic Index. Degrade to an
     // ungrounded answer and say so, rather than failing the whole turn.
-    await showToast({
+    showToast({
       style: "failure",
       title: "Semantic Index unavailable",
       message: `Answering without note context. ${message(err)}`,

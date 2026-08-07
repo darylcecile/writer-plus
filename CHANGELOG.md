@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-07
+
+- Extensions system foundations. Extensions are written in TypeScript and React, run inside a QuickJS sandbox with no ambient host access, and render through host-owned UI primitives so every extension inherits the app's theme. Anything that touches the machine goes through a capability broker and is re-validated in Rust against the extension's manifest, including workspace path containment that refuses symlinks escaping the workspace. Extensions can expose services to each other: the bundled semantic-index extension indexes notes with sqlite-vec and exposes search to the AI Chat extension, which is otherwise unable to read the index. Chat answers carry citations the host resolves with the user's own authority, so an extension needs no file-read grant to make a source clickable.
+
 ## 2026-07-20
 
 - Hide status bar metrics and sidebar sections. Right-click the bottom status bar to toggle the word, character, and paragraph counts individually (the bar disappears when all three are off); right-click the sidebar background or a section title to toggle the Search button and the Recents section. All five toggles also live in Preferences — the metric toggles under a new "Status Bar" section, the sidebar ones under Appearance — and every menu lists hidden items as unchecked entries so they can be re-shown from the same place.

@@ -41,6 +41,12 @@ These cost real debugging time and are now encoded as requirements:
 3. **Props must be allowlisted, not copied.** Only primitives, plain objects, arrays, and functions (converted to callback IDs) may cross. Everything else is dropped.
 4. **There is no ambient event loop in the VM.** The host must pump `executePendingJobs()` and the reconciler's `flushPassiveEffects()`. Timers must be host-provided.
 5. **Handles require manual disposal.** Leaking one aborts the WASM module on `dispose()` with a GC assertion. All handle use must go through a scope helper.
+6. **WebKit enforces CSP for WebAssembly.** The app's original CSP produced `CompileError: Refused to create a WebAssembly object`. **Requirement:** `tauri.conf.json` must include `'wasm-unsafe-eval'` in `script-src` and `worker-src 'self'`. Workers inherit CSP from their _own_ response, not the parent document. Verified in the shipped WKWebView by `apps/desktop/e2e/specs/extension-vm.spec.js`.
+7. **React 19 removed legacy mode.** The container must be created with `ConcurrentRoot`; a `LegacyRoot` tag never schedules updates. `updateContainer` alone still never renders inside the VM, so `resolveUpdatePriority` is pinned to `DiscreteEventPriority` to keep all work on the sync lane.
+8. **React's scheduler binds its host callback at module init**, preferring `setImmediate`, then `MessageChannel`, then `setTimeout`. QuickJS has none of these, so the host **must** inject `setTimeout`/`clearTimeout` _before_ evaluating the bundle. Node's `setImmediate` masks this in tests; the test environment deletes it so the failure stays honest.
+9. **QuickJS does not drain promise reactions when the host stack unwinds.** A capability can resolve with correct data and the guest's `.then` still never runs. The host must call `runtime.executePendingJobs()` after every guest entry point.
+10. **In-flight capability calls are not "pending work".** They wait on the host, so a render-settling loop cannot advance them; counting them burns the whole loop budget on every render that has an outstanding request.
+11. **Depth limits are not cycle detection.** A cycle nested within the depth limit produces a plausible-looking truncated copy instead of an error. Prop sanitization must track the path and reject the whole prop.
 
 ## Goals
 
@@ -155,6 +161,25 @@ Design decisions, and why:
 | Runtime      | `workspace.write`, `workspace.delete`, `network.domains: ["*"]`, `shell`                  | prompted on first use, with "allow once / always / deny" |
 
 **Scopes are enforced in Rust against the canonicalized real path**, after symlink resolution, and must remain inside the workspace root. A `read: ["**/*.md"]` grant cannot escape via `../` or a symlink into `~/.ssh`.
+
+### Inter-extension services
+
+The spec originally shared only _storage_ between extensions, which is not enough: the
+semantic-index extension has to expose _query_ to AI Chat. A `services` capability closes
+that gap.
+
+- A provider declares `permissions.providesServices: ["search"]`.
+- A consumer declares `permissions.usesServices: ["search"]`.
+- The broker routes consumer → provider, and the user consents to the link at install time.
+
+Two rules make this safe to add. A service call is **not** an authority grant: the provider
+runs with its own permissions, never the caller's, so a consumer cannot borrow a capability
+it was not granted. And a provider failure is delivered to the consumer as a normal refusal
+(`{ ok: false, code }`), never as an exception, so one extension can never take another down.
+
+**Embeddings are a Rust capability, not a library.** sqlite-vec is a native SQLite extension
+and embedding inference is native code; neither can run in QuickJS. It is layered exactly
+like `ai`: the guest sees an async capability, Rust owns the implementation.
 
 ### Guest API surface
 

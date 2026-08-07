@@ -18,6 +18,13 @@ export default defineConfig(async () => ({
       "@shared": new URL("./shared", import.meta.url).pathname,
     },
   },
+  // Vite only reads `.env` files, not the ambient process environment, so
+  // an explicit define is the only reliable way for the E2E build script to
+  // switch on test-only affordances. Defaults to false, so a normal release
+  // build can never accidentally ship them.
+  define: {
+    __E2E__: JSON.stringify(process.env.VITE_E2E === "1"),
+  },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
