@@ -9,7 +9,10 @@
     ".": "./src/index.ts",
     "./manifest": "./src/manifest.ts",
     "./protocol": "./src/protocol.ts",
-    "./runtime": "./src/runtime/index.ts"
+    "./runtime": "./src/runtime/index.ts",
+    "./jsx-runtime": "./src/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./src/jsx-runtime.ts",
+    "./globals": "./src/globals.d.ts"
   },
   "dependencies": {
     "react": "^19.1.0",

@@ -128,7 +128,12 @@ export const bridge = {
   },
 
   hasPendingWork(): boolean {
-    return timers.length > 0 || pending.size > 0;
+    // Deliberately excludes in-flight capability calls. Those are waiting on
+    // the host, not on the guest, so looping cannot advance them - counting
+    // them here makes the settle loop spin its full budget and warn on every
+    // render that happens to have an outstanding request. The host pumps the
+    // guest again when the result arrives.
+    return timers.length > 0;
   },
 };
 

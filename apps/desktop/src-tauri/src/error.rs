@@ -4,6 +4,8 @@ use serde::Serialize;
 pub enum AppError {
     #[error("IO error: {0}")]
     Io(String),
+    #[error("Invalid: {0}")]
+    Invalid(String),
     #[error("Not found: {0}")]
     NotFound(String),
     #[error("Already exists: {0}")]
@@ -12,6 +14,10 @@ pub enum AppError {
     NoWorkspace,
     #[error("Database error: {0}")]
     Database(String),
+    #[error("denied: {0}")]
+    Denied(String),
+    #[error("unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl Serialize for AppError {

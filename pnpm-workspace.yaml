@@ -3,6 +3,7 @@ packages:
   - apps/desktop/e2e
   - packages/*
   - tools/*
+  - extensions/*
 
 catalog:
   "@codemirror/autocomplete": ^6.20.0

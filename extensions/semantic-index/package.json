@@ -1,0 +1,10 @@
+{
+  "name": "@writer-ext/semantic-index",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.tsx",
+  "dependencies": {
+    "@writer/extension-api": "workspace:*"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "id": "writer.ai-chat",
+  "name": "AI Chat",
+  "version": "0.1.0",
+  "description": "Ask questions about your notes. Answers are grounded in your own writing, with sources you can open.",
+  "author": "writer",
+  "icon": "message",
+  "commands": [
+    {
+      "name": "chat",
+      "title": "Chat With Your Notes",
+      "subtitle": "Ask questions grounded in what you've written",
+      "mode": "view"
+    }
+  ],
+  "permissions": {
+    "capabilities": [
+      { "name": "ai", "chat": true },
+      { "name": "workspace", "read": ["**/*.md"] },
+      { "name": "storage", "shared": false }
+    ],
+    "usesServices": ["search"],
+    "providesServices": []
+  },
+  "preferences": [
+    {
+      "name": "model",
+      "title": "Model",
+      "type": "dropdown",
+      "default": "gpt-4o",
+      "options": ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4"]
+    },
+    {
+      "name": "contextNotes",
+      "title": "Notes to retrieve per question",
+      "type": "dropdown",
+      "default": "6",
+      "options": ["3", "6", "10"],
+      "description": "More context gives better answers but costs more tokens."
+    }
+  ]
+}

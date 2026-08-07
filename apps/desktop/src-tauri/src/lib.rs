@@ -3,6 +3,7 @@ mod config;
 #[cfg(target_os = "macos")]
 mod dock_menu;
 mod error;
+mod extensions;
 mod ignore;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -539,6 +540,7 @@ pub fn run() {
 
             // Initialise the semantic vector index (non-fatal if it fails).
             semantic::init(app.handle());
+            extensions::init(app.handle());
 
             Ok(())
         })
@@ -588,6 +590,9 @@ pub fn run() {
             semantic::semantic_index_note,
             semantic::semantic_remove_note,
             semantic::semantic_search,
+            extensions::extension_capability,
+            extensions::extension_list,
+            extensions::extension_install_manifest,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

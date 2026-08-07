@@ -1,0 +1,46 @@
+{
+  "id": "writer.semantic-index",
+  "name": "Semantic Index",
+  "version": "0.1.0",
+  "description": "Builds and maintains a local vector index of your notes, and exposes semantic search to other extensions.",
+  "author": "writer",
+  "icon": "magnifying-glass",
+  "commands": [
+    {
+      "name": "search",
+      "title": "Search Notes Semantically",
+      "subtitle": "Find notes by meaning, not keywords",
+      "mode": "view"
+    },
+    {
+      "name": "manage",
+      "title": "Manage Note Index",
+      "subtitle": "Rebuild or inspect the semantic index",
+      "mode": "view"
+    }
+  ],
+  "permissions": {
+    "capabilities": [
+      { "name": "embeddings", "query": true, "write": true },
+      { "name": "workspace", "read": ["**/*.md"] }
+    ],
+    "providesServices": ["search"],
+    "usesServices": []
+  },
+  "preferences": [
+    {
+      "name": "autoIndex",
+      "title": "Index notes automatically",
+      "type": "checkbox",
+      "default": true,
+      "description": "Re-index changed notes in the background as you write."
+    },
+    {
+      "name": "resultCount",
+      "title": "Results to show",
+      "type": "dropdown",
+      "default": "8",
+      "options": ["5", "8", "12", "20"]
+    }
+  ]
+}

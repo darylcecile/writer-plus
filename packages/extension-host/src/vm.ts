@@ -257,6 +257,12 @@ export class ExtensionVm {
    * is the outer backstop for a guest that never returns at all.
    */
   runTimers(): void {
+    // Promise reactions sit in QuickJS's own job queue and do NOT run when the
+    // stack unwinds the way they do on a host JS engine - the embedder has to
+    // drain them. Missing this is silent: a capability resolves, the guest's
+    // `.then` never fires, and the UI simply never updates.
+    this.drainJobs();
+
     for (let pass = 0; pass < 1000; pass++) {
       if (this.timers.length === 0) return;
       const due = this.timers.filter((t) => t.due <= this.clock);
@@ -275,8 +281,35 @@ export class ExtensionVm {
           (timer.fnRef as { dispose(): void }).dispose();
         }
       }
+      // A timer callback can resolve a promise, so drain again before deciding
+      // the queue is empty.
+      this.drainJobs();
     }
     this.callbacks.onLog("warn", "timer queue did not drain in 1000 passes");
+  }
+
+  /**
+   * Run queued promise reactions until the queue is empty.
+   *
+   * Bounded because a promise chain that re-queues itself forever would
+   * otherwise hang the host; the interrupt handler cannot help here since
+   * each individual job returns promptly.
+   */
+  private drainJobs(): void {
+    const runtime = this.runtime as unknown as {
+      executePendingJobs(maxJobs?: number): { value?: number; error?: { dispose(): void } };
+    };
+    for (let pass = 0; pass < 100; pass++) {
+      const result = runtime.executePendingJobs();
+      if (result.error) {
+        const dumped = this.ctx.dump(result.error);
+        result.error.dispose();
+        this.callbacks.onLog("error", `pending job threw: ${JSON.stringify(dumped)}`);
+        return;
+      }
+      if (!result.value) return;
+    }
+    this.callbacks.onLog("warn", "promise jobs did not drain in 100 passes");
   }
 
   /**

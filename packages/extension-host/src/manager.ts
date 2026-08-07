@@ -94,7 +94,10 @@ export class ExtensionManager {
   /** Mount a command's UI. Errors are reported, not thrown, so one bad extension cannot take down the panel. */
   mount(instanceId: string, command: string, props: Record<string, JsonValue> = {}): void {
     this.withInstance(instanceId, (instance) => {
-      instance.vm.callGuest("mount", [command, props]);
+      // The guest entry points take pre-serialized JSON, not objects: the VM
+      // boundary is a string boundary, so serializing here rather than
+      // relying on the arg marshaller keeps both sides on one contract.
+      instance.vm.callGuest("mount", [command, JSON.stringify(props)]);
       instance.vm.runTimers();
     });
   }
@@ -102,7 +105,7 @@ export class ExtensionManager {
   /** Deliver a UI event to the guest, then drain whatever it scheduled. */
   dispatchEvent(instanceId: string, handlerId: string, args: JsonValue[]): void {
     this.withInstance(instanceId, (instance) => {
-      instance.vm.callGuest("event", [handlerId, args]);
+      instance.vm.callGuest("event", [handlerId, JSON.stringify(args)]);
       instance.vm.runTimers();
     });
   }
