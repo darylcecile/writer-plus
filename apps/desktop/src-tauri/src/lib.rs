@@ -7,6 +7,7 @@ mod ignore;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod open_target;
+mod semantic;
 mod state;
 #[cfg(desktop)]
 mod updater;
@@ -536,6 +537,9 @@ pub fn run() {
                 attach_window_handlers(app.handle(), &window);
             }
 
+            // Initialise the semantic vector index (non-fatal if it fails).
+            semantic::init(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -579,6 +583,11 @@ pub fn run() {
             commands::shell_install::install_cli,
             #[cfg(target_os = "macos")]
             commands::shell_install::uninstall_cli,
+            semantic::semantic_index_status,
+            semantic::semantic_reindex_all,
+            semantic::semantic_index_note,
+            semantic::semantic_remove_note,
+            semantic::semantic_search,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -10,6 +10,8 @@ pub enum AppError {
     AlreadyExists(String),
     #[error("No workspace is open")]
     NoWorkspace,
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl Serialize for AppError {
@@ -24,5 +26,11 @@ impl Serialize for AppError {
 impl From<std::io::Error> for AppError {
     fn from(err: std::io::Error) -> Self {
         AppError::Io(err.to_string())
+    }
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(err: rusqlite::Error) -> Self {
+        AppError::Database(err.to_string())
     }
 }

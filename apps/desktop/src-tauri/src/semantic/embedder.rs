@@ -12,6 +12,7 @@ use crate::error::AppError;
 /// `float[N]` width used in the vec0 schema (currently 384).
 pub trait Embedder: Send + Sync {
     /// Number of floats per embedding vector.
+    #[allow(dead_code)]
     fn dimensions(&self) -> usize;
 
     /// Embed a batch of texts. Returns one vector per input string, in the

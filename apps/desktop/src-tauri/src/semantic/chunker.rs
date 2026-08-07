@@ -99,7 +99,11 @@ mod tests {
     #[test]
     fn splits_on_headings() {
         let chunks = chunk_markdown(heading_doc());
-        assert_eq!(chunks.len(), 3, "expected 3 heading sections, got {chunks:?}");
+        assert_eq!(
+            chunks.len(),
+            3,
+            "expected 3 heading sections, got {chunks:?}"
+        );
         assert!(chunks[0].starts_with("# Introduction"));
         assert!(chunks[1].starts_with("## Background"));
         assert!(chunks[2].starts_with("## Results"));

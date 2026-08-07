@@ -194,6 +194,12 @@ importers:
       '@tauri-apps/plugin-store':
         specifier: 'catalog:'
         version: 2.4.2
+      '@writer/extension-api':
+        specifier: workspace:*
+        version: link:../../packages/extension-api
+      '@writer/extension-host':
+        specifier: workspace:*
+        version: link:../../packages/extension-host
       beautiful-mermaid:
         specifier: 'catalog:'
         version: 1.1.3
