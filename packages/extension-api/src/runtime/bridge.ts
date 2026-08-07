@@ -82,12 +82,25 @@ export const bridge = {
   },
 
   setTimeout(fn: () => void, delay: number): number {
+    // Prefer a host-provided global. Inside the VM the host installs
+    // `setTimeout` itself (it must exist before React's scheduler initialises),
+    // and React schedules onto that. Keeping a second queue here would leave
+    // scheduler work and commits on different queues, so one would never drain
+    // - which is exactly how effect-driven updates went missing.
+    const g = globalThis as unknown as { setTimeout?: (f: () => void, d: number) => number };
+    if (typeof g.setTimeout === "function") return g.setTimeout(fn, Math.max(0, delay));
+
     const id = nextTimerId++;
     timers.push({ id, due: __writer.now() + Math.max(0, delay), fn });
     return id;
   },
 
   clearTimeout(id: number): void {
+    const g = globalThis as unknown as { clearTimeout?: (i: number) => void };
+    if (typeof g.clearTimeout === "function") {
+      g.clearTimeout(id);
+      return;
+    }
     timers = timers.filter((t) => t.id !== id);
   },
 

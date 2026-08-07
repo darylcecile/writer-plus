@@ -26,8 +26,7 @@ describe("VM scheduling environment", () => {
     expect(typeof g.setTimeout).toBe("function");
   });
 
-  it("installTimerGlobals publishes pumpable timers and removes the alternatives", async () => {
-    const injected: Array<{ fn: () => void; delay: number }> = [];
+  it("installTimerGlobals publishes timers and removes the alternatives", async () => {
     (g as { __writer?: unknown }).__writer = {
       commit: () => {},
       log: () => {},
@@ -36,7 +35,7 @@ describe("VM scheduling environment", () => {
       now: () => 0,
     };
 
-    const { installTimerGlobals, bridge } = await import("../src/runtime/bridge");
+    const { installTimerGlobals } = await import("../src/runtime/bridge");
 
     const target: Record<string, unknown> = {
       setImmediate: () => {},
@@ -47,16 +46,43 @@ describe("VM scheduling environment", () => {
     expect(target.setImmediate).toBeUndefined();
     expect(target.MessageChannel).toBeUndefined();
     expect(typeof target.setTimeout).toBe("function");
+    expect(typeof target.clearTimeout).toBe("function");
+  });
 
-    // A timer scheduled through the installed global must land in the bridge
-    // queue, which is what `runTimers` drains.
-    (target.setTimeout as (fn: () => void, d: number) => number)(
-      () => injected.push({ fn: () => {}, delay: 0 }),
-      0,
-    );
-    expect(bridge.hasPendingWork()).toBe(true);
-    bridge.runTimers();
-    expect(injected).toHaveLength(1);
-    expect(bridge.hasPendingWork()).toBe(false);
+  it("delegates to a host-installed setTimeout rather than keeping a second queue", async () => {
+    // The invariant that matters. In the VM the host installs `setTimeout`
+    // before React's scheduler initialises, so the scheduler schedules onto the
+    // host queue. If the bridge kept its own queue as well, scheduler work and
+    // committed frames would sit on different queues and one would never drain
+    // - which is how effect-driven updates silently stopped rendering.
+    const seen: number[] = [];
+    const original = g.setTimeout as (f: () => void, d: number) => number;
+    g.setTimeout = (fn: () => void, delay: number) => {
+      seen.push(delay);
+      return original(fn, delay);
+    };
+
+    (g as { __writer?: unknown }).__writer = {
+      commit: () => {},
+      log: () => {},
+      capability: () => {},
+      toast: () => {},
+      now: () => 0,
+    };
+
+    try {
+      const { bridge } = await import("../src/runtime/bridge");
+      let ran = false;
+      bridge.setTimeout(() => {
+        ran = true;
+      }, 0);
+
+      expect(seen, "bridge must schedule through the host global").toHaveLength(1);
+      // Nothing was queued locally, so draining the host queue is what runs it.
+      (g as unknown as { __vmTimers: { run(): void } }).__vmTimers.run();
+      expect(ran).toBe(true);
+    } finally {
+      g.setTimeout = original;
+    }
   });
 });

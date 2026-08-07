@@ -28,9 +28,32 @@ import type {
 
 type Factory<P> = (props: P & { children?: ReactNode }) => ReactNode;
 
+/**
+ * Props that hold elements rather than data, in Raycast's authoring style
+ * (`actions={<ActionPanel>...}`).
+ *
+ * React never renders a prop, and a React element is not serializable, so
+ * these are hoisted into the children list here. The host identifies them by
+ * child `type` (`ActionPanel`, `List.Dropdown`, `List.Item.Detail`), which is
+ * unambiguous. Doing it in the library keeps the familiar authoring API while
+ * leaving the reconciler with only real children to serialize.
+ */
+const ELEMENT_PROPS = ["actions", "searchBarAccessory", "detail"] as const;
+
 function host<P>(type: string): Factory<P> {
-  const component = (props: P & { children?: ReactNode }) =>
-    createElement(type, props as Record<string, unknown>);
+  const component = (props: P & { children?: ReactNode }) => {
+    const rest = { ...(props as Record<string, unknown>) };
+    const hoisted: ReactNode[] = [];
+    for (const key of ELEMENT_PROPS) {
+      if (rest[key] != null) {
+        hoisted.push(rest[key] as ReactNode);
+        delete rest[key];
+      }
+    }
+    const children = rest.children as ReactNode;
+    delete rest.children;
+    return createElement(type, rest, ...hoisted, children);
+  };
   Object.defineProperty(component, "name", { value: type });
   return component;
 }
