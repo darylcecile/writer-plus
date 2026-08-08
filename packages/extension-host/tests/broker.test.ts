@@ -202,3 +202,196 @@ describe("service routing", () => {
     expect(routeService).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Runtime-tier approval. Rust refuses a call that has no decision yet and says
+ * so with a distinguishable error; the host's job is to ask, record, and retry
+ * exactly once.
+ *
+ * These are consent tests, so each asserts what the *user* ends up authorising,
+ * not just that the plumbing runs.
+ */
+describe("runtime permission prompts", () => {
+  const needsApproval = (key: string) => new Error(`needs-approval: ${key}`);
+
+  function writeGrant() {
+    return grants({ "note.taker": { capabilities: ["workspace"] } });
+  }
+
+  it("asks the user and retries the call once when they allow it", async () => {
+    const invoke = vi
+      .fn()
+      // The original call: Rust has no decision on file.
+      .mockRejectedValueOnce(needsApproval("workspace.write"))
+      // extension_grant_set
+      .mockResolvedValueOnce(null)
+      // The retry.
+      .mockResolvedValueOnce(null);
+    const requestApproval = vi.fn().mockResolvedValue("always");
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: ["a.md", "hi"],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(requestApproval).toHaveBeenCalledWith("note.taker", "workspace.write");
+    expect(invoke).toHaveBeenNthCalledWith(2, "extension_grant_set", {
+      extensionId: "note.taker",
+      key: "workspace.write",
+      decision: "always",
+    });
+  });
+
+  it("does not perform the action when the user declines", async () => {
+    const invoke = vi.fn().mockRejectedValueOnce(needsApproval("workspace.write"));
+    const requestApproval = vi.fn().mockResolvedValue("never");
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: ["a.md", "hi"],
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "denied" });
+    // The whole point: declining must not reach Rust again. A retry after a
+    // refusal is how "no" quietly becomes "yes".
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("records allow-once as once, so it cannot be promoted to always", async () => {
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(needsApproval("workspace.write"))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    const requestApproval = vi.fn().mockResolvedValue("once");
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    await broker("i1", "note.taker", { capability: "workspace", method: "write", args: [] });
+
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      "extension_grant_set",
+      expect.objectContaining({ decision: "once" }),
+    );
+  });
+
+  /**
+   * An extension writing in a loop hits the gate on every call. One dialog per
+   * call is unusable, and it is a way to bully a user into clicking allow just
+   * to clear the screen.
+   */
+  it("opens one dialog for concurrent calls needing the same permission", async () => {
+    const invoke = vi.fn().mockImplementation((command: string) => {
+      if (command === "extension_grant_set") return Promise.resolve(null);
+      // Every capability call is refused until a decision exists; the mock has
+      // no state, so a second dialog would be the only way to proceed.
+      return callCount++ < 3
+        ? Promise.reject(needsApproval("workspace.write"))
+        : Promise.resolve(null);
+    });
+    let callCount = 0;
+    let resolvePrompt: ((d: "always") => void) | undefined;
+    const requestApproval = vi.fn().mockImplementation(
+      () =>
+        new Promise<"always">((resolve) => {
+          resolvePrompt = resolve;
+        }),
+    );
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const calls = [0, 1, 2].map((n) =>
+      broker("i1", "note.taker", { capability: "workspace", method: "write", args: [`${n}.md`] }),
+    );
+
+    await vi.waitFor(() => expect(resolvePrompt).toBeDefined());
+    resolvePrompt?.("always");
+    await Promise.all(calls);
+
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+  });
+
+  /** A host with no way to ask has no way to obtain consent. */
+  it("refuses rather than allowing when the host cannot prompt", async () => {
+    const invoke = vi.fn().mockRejectedValueOnce(needsApproval("workspace.write"));
+
+    const broker = createBroker({ invoke, grants: writeGrant() });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: [],
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "denied" });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Rust is the authority. If it still refuses after a recorded grant,
+   * something is wrong - and retrying with a prompt in the loop would be an
+   * inescapable dialog.
+   */
+  it("retries at most once and never re-prompts in a loop", async () => {
+    const invoke = vi
+      .fn()
+      .mockImplementation((command: string) =>
+        command === "extension_grant_set"
+          ? Promise.resolve(null)
+          : Promise.reject(needsApproval("workspace.write")),
+      );
+    const requestApproval = vi.fn().mockResolvedValue("always");
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: [],
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    // original + grant_set + one retry
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports honestly when the decision could not be saved", async () => {
+    const invoke = vi
+      .fn()
+      .mockImplementation((command: string) =>
+        command === "extension_grant_set"
+          ? Promise.reject(new Error("keychain locked"))
+          : Promise.reject(needsApproval("workspace.write")),
+      );
+    const requestApproval = vi.fn().mockResolvedValue("always");
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: [],
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "failed" });
+    expect(result).toHaveProperty("message", expect.stringContaining("keychain locked"));
+  });
+
+  /** An ordinary refusal must not be mistaken for an unanswered prompt. */
+  it("does not prompt for a plain denial", async () => {
+    const invoke = vi.fn().mockRejectedValue(new Error("denied: path escapes workspace"));
+    const requestApproval = vi.fn();
+
+    const broker = createBroker({ invoke, grants: writeGrant(), requestApproval });
+    const result = await broker("i1", "note.taker", {
+      capability: "workspace",
+      method: "write",
+      args: ["../../etc/passwd"],
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "denied" });
+    expect(requestApproval).not.toHaveBeenCalled();
+  });
+});

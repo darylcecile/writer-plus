@@ -1,6 +1,7 @@
 pub mod capabilities;
 pub mod credentials;
 pub mod github;
+pub mod grants;
 pub mod installer;
 pub mod manifest;
 pub mod permissions;
@@ -11,6 +12,7 @@ pub mod which;
 
 use crate::error::AppError;
 use crate::state::AppState;
+use grants::GrantStore;
 use installer::{InstallCandidate, StagedInstall};
 use manifest::ExtensionManifest;
 use parking_lot::Mutex;
@@ -51,6 +53,18 @@ pub fn extension_capability(
         &capability,
         &method,
         &args,
+    )?;
+
+    // Runtime tier, checked only after the manifest gate passed. Order is
+    // deliberate: a capability the extension never declared must be refused
+    // outright, never turned into a dialog, or any extension could raise an
+    // alarming prompt for a permission it does not hold and harvest a click.
+    grants::check(
+        &app.state::<GrantStore>(),
+        &installed.manifest,
+        &extension_id,
+        &capability,
+        &method,
     )?;
 
     capabilities::dispatch(
@@ -106,6 +120,172 @@ pub fn init(app: &tauri::AppHandle) {
     app.manage(registry);
     app.manage(process::ProcessTable::default());
     app.manage(StagingArea::default());
+
+    // Runtime permission decisions. A missing or unreadable file means "no
+    // decisions yet", so a wiped grants file re-prompts rather than silently
+    // keeping permissions the user can no longer see.
+    let grant_store = match extensions_dir(app) {
+        Ok(dir) => GrantStore::load(&dir.join("grants.json")),
+        Err(e) => {
+            eprintln!("[extensions] permission decisions will not persist: {e}");
+            GrantStore::default()
+        }
+    };
+    app.manage(grant_store);
+}
+
+/// Everything the frontend runtime needs to start one installed extension.
+///
+/// Assembled in Rust so the capability namespaces the broker enforces are
+/// derived from the same enum Rust gates on. Deriving them in TypeScript is
+/// exactly how the consent dialog once ended up listing no permissions at all.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeExtension {
+    pub id: String,
+    pub name: String,
+    pub code: String,
+    pub commands: Vec<manifest::CommandDecl>,
+    pub permissions: RuntimeGrants,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeGrants {
+    pub capabilities: Vec<String>,
+    pub uses_services: Vec<String>,
+    pub provides_services: Vec<String>,
+}
+
+/// Namespaces every extension may call regardless of its manifest.
+///
+/// `preferences` only ever returns the extension's own declared preference
+/// values, and `ui` never leaves the renderer, so neither is something to
+/// consent to. They are listed here rather than special-cased in the broker so
+/// the set is enumerable and reviewable in one place.
+const IMPLICIT_CAPABILITIES: [&str; 2] = ["preferences", "ui"];
+
+/// Installed extensions with their bundles, ready to run.
+///
+/// An extension whose bundle is missing or unreadable is skipped with a log
+/// rather than failing the whole list: one broken install must not take every
+/// other extension down with it.
+#[tauri::command]
+pub fn extension_runtime_list(app: tauri::AppHandle) -> Vec<RuntimeExtension> {
+    let registry = app.state::<ExtensionRegistry>();
+    let mut out = Vec::new();
+
+    for installed in registry.list() {
+        if !installed.enabled {
+            continue;
+        }
+
+        let bundle = installed.install_dir.join("extension.js");
+        let code = match std::fs::read_to_string(&bundle) {
+            Ok(code) => code,
+            Err(err) => {
+                eprintln!(
+                    "[extensions] {} has no runnable bundle at {}: {err}",
+                    installed.manifest.id,
+                    bundle.display()
+                );
+                continue;
+            }
+        };
+
+        let mut capabilities: Vec<String> = installed
+            .manifest
+            .permissions
+            .capabilities
+            .iter()
+            .map(|grant| grant.namespace().to_string())
+            .collect();
+        capabilities.extend(IMPLICIT_CAPABILITIES.iter().map(|s| s.to_string()));
+        // `services` is routed peer to peer and checked against usesServices
+        // rather than this list, but the broker's namespace check runs first.
+        if !installed.manifest.permissions.uses_services.is_empty() {
+            capabilities.push("services".into());
+        }
+        capabilities.sort();
+        capabilities.dedup();
+
+        out.push(RuntimeExtension {
+            id: installed.manifest.id.clone(),
+            name: installed.manifest.name.clone(),
+            code,
+            commands: installed.manifest.commands.clone(),
+            permissions: RuntimeGrants {
+                capabilities,
+                uses_services: installed.manifest.permissions.uses_services.clone(),
+                provides_services: installed.manifest.permissions.provides_services.clone(),
+            },
+        });
+    }
+
+    out
+}
+
+/// Writer's own wording for a permission an extension is asking to use.
+///
+/// The prompt must not invent its own description: the text a user reads when
+/// deciding has to be the text produced by the module that grants the
+/// permission, or the two can drift and the dialog stops describing what it
+/// actually authorises.
+#[tauri::command]
+pub fn extension_permission_detail(
+    extension_id: String,
+    key: String,
+    app: tauri::AppHandle,
+) -> Result<manifest::PermissionDescription, AppError> {
+    let registry = app.state::<ExtensionRegistry>();
+    let installed = registry.get(&extension_id).ok_or_else(|| {
+        AppError::NotFound(format!("extension {extension_id:?} is not installed"))
+    })?;
+
+    installed
+        .manifest
+        .describe_permissions()
+        .into_iter()
+        .find(|d| d.key == key)
+        .ok_or_else(|| AppError::NotFound(format!("{extension_id:?} does not request {key:?}")))
+}
+
+/// Record what the user chose in a runtime permission prompt.
+///
+/// Rejects keys the extension never requested. Without that check a
+/// compromised frontend could grant an extension a permission its manifest
+/// never declared and the user never saw at install.
+#[tauri::command]
+pub fn extension_grant_set(
+    extension_id: String,
+    key: String,
+    decision: grants::Decision,
+    app: tauri::AppHandle,
+) -> Result<(), AppError> {
+    // Reuses the lookup above precisely so "is this a real permission for this
+    // extension?" has one answer.
+    extension_permission_detail(extension_id.clone(), key.clone(), app.clone())?;
+    app.state::<GrantStore>()
+        .record(&extension_id, &key, decision);
+    Ok(())
+}
+
+/// Persisted runtime decisions for one extension, so they can be reviewed and
+/// revoked. A permission granted once and never surfaced again is a permission
+/// the user has effectively lost control of.
+#[tauri::command]
+pub fn extension_grants(extension_id: String, app: tauri::AppHandle) -> Vec<GrantRecord> {
+    app.state::<GrantStore>()
+        .list(&extension_id)
+        .into_iter()
+        .map(|(key, allowed)| GrantRecord { key, allowed })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+pub struct GrantRecord {
+    pub key: String,
+    pub allowed: bool,
 }
 
 /// Downloads waiting on a consent decision.
@@ -221,6 +401,9 @@ pub fn extension_uninstall(extension_id: String, app: tauri::AppHandle) -> Resul
     installer::uninstall(&extension_id, &dir)?;
     app.state::<ExtensionRegistry>().remove(&extension_id);
     app.state::<process::ProcessTable>().reap(&extension_id);
+    // Reinstalling the same id must not silently inherit consent the user gave
+    // to different code.
+    app.state::<GrantStore>().forget(&extension_id);
     Ok(())
 }
 

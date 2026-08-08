@@ -39,11 +39,28 @@ export type ServiceRouter = (
   args: JsonValue[],
 ) => Promise<CapabilityResult>;
 
+/**
+ * Asks the user about a runtime-tier permission and returns what they chose.
+ *
+ * Injected rather than imported so this module never reaches for a DOM, and
+ * so tests can answer without rendering anything.
+ */
+export type ApprovalPrompt = (
+  extensionId: string,
+  permissionKey: string,
+) => Promise<"once" | "always" | "never">;
+
 export interface BrokerOptions {
   invoke: RustInvoke;
   /** extensionId -> permissions granted at install. */
   grants: Map<string, GrantedPermissions>;
   routeService?: ServiceRouter;
+  /**
+   * Asks the user about a runtime-tier permission. When absent, a call
+   * needing approval is refused rather than silently allowed - a host with no
+   * way to ask has no way to obtain consent.
+   */
+  requestApproval?: ApprovalPrompt;
   /** Wall-clock ceiling for a single capability call. */
   timeoutMs?: number;
 }
@@ -58,6 +75,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function createBroker(options: BrokerOptions) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  /** In-flight approval dialogs, keyed by extension + permission. */
+  const pendingPrompts = new Map<string, Promise<"once" | "always" | "never">>();
 
   return async function broker(
     instanceId: string,
@@ -106,10 +125,106 @@ export function createBroker(options: BrokerOptions) {
       // Rust returns denials as errors carrying a code; preserve the
       // distinction so the guest can tell "not allowed" from "broke".
       const message = describe(err);
+
+      const permissionKey = approvalKey(message);
+      if (permissionKey !== null) {
+        return askThenRetry(extensionId, instanceId, request, permissionKey);
+      }
+
       const code = message.startsWith("denied:") ? "denied" : "failed";
       return { ok: false, code, message };
     }
   };
+
+  /**
+   * Asks the user about a runtime-tier permission, then retries the call once.
+   *
+   * Exactly once. Rust is the authority, so if it still refuses after a
+   * recorded grant something is wrong and looping would turn that into a hang
+   * - or, with a prompt in the loop, an inescapable dialog.
+   */
+  async function askThenRetry(
+    extensionId: string,
+    instanceId: string,
+    request: CapabilityRequest,
+    permissionKey: string,
+  ): Promise<CapabilityResult> {
+    if (!options.requestApproval) {
+      return denied(`${permissionKey} needs approval but this host cannot ask`);
+    }
+
+    const decision = await sharedPrompt(extensionId, permissionKey, options.requestApproval);
+    if (decision === "never") {
+      return denied(`${permissionKey} was declined`);
+    }
+
+    try {
+      await options.invoke("extension_grant_set", { extensionId, key: permissionKey, decision });
+    } catch (err) {
+      // The decision could not be recorded, so Rust will refuse again.
+      // Reporting that honestly beats a retry that fails for a reason the
+      // user cannot connect to what they just clicked.
+      return { ok: false, code: "failed", message: describe(err) };
+    }
+
+    try {
+      const value = await withTimeout(
+        options.invoke("extension_capability", {
+          instanceId,
+          extensionId,
+          capability: request.capability,
+          method: request.method,
+          args: request.args,
+        }),
+        timeoutMs,
+        `${request.capability}.${request.method}`,
+      );
+      return { ok: true, value: value as JsonValue };
+    } catch (err) {
+      if (err instanceof TimeoutError) {
+        return { ok: false, code: "timeout", message: err.message };
+      }
+      const message = describe(err);
+      return { ok: false, code: message.startsWith("denied:") ? "denied" : "failed", message };
+    }
+  }
+
+  /**
+   * One dialog per extension+permission, however many calls are waiting.
+   *
+   * An extension writing in a loop hits the gate once per call. Without this
+   * every one of those opens its own dialog, which is both unusable and a way
+   * to bully a user into clicking allow just to clear the screen.
+   */
+  function sharedPrompt(
+    extensionId: string,
+    permissionKey: string,
+    ask: ApprovalPrompt,
+  ): Promise<"once" | "always" | "never"> {
+    const cacheKey = `${extensionId}\u0000${permissionKey}`;
+    const existing = pendingPrompts.get(cacheKey);
+    if (existing) return existing;
+
+    const prompt = ask(extensionId, permissionKey).finally(() => {
+      pendingPrompts.delete(cacheKey);
+    });
+    pendingPrompts.set(cacheKey, prompt);
+    return prompt;
+  }
+}
+
+/**
+ * The permission key Rust says needs approval, or `null` for any other error.
+ *
+ * The prefix is pinned by a Rust test, because it is the only thing carrying
+ * this distinction across the boundary.
+ */
+function approvalKey(message: string): string | null {
+  const prefix = "needs-approval: ";
+  const at = message.indexOf(prefix);
+  if (at === -1) return null;
+  const key = message.slice(at + prefix.length).trim();
+  return key.length > 0 ? key : null;
 }
 
 async function routeServiceCall(

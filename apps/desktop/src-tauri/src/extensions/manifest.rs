@@ -146,6 +146,24 @@ pub enum PermissionTier {
 }
 
 impl CapabilityGrant {
+    /// The capability namespace this grant unlocks, matching the first half of
+    /// a `capability.method` call.
+    ///
+    /// Lives on the enum so adding a variant is a compile error here rather
+    /// than a silently missing namespace somewhere downstream.
+    pub fn namespace(&self) -> &'static str {
+        match self {
+            CapabilityGrant::Workspace { .. } => "workspace",
+            CapabilityGrant::Embeddings { .. } => "embeddings",
+            CapabilityGrant::Storage { .. } => "storage",
+            CapabilityGrant::Network { .. } => "network",
+            CapabilityGrant::Clipboard { .. } => "clipboard",
+            // The unsafe grant is what unlocks process spawning; there is no
+            // separate "process" capability to request.
+            CapabilityGrant::Unsafe { .. } => "process",
+        }
+    }
+
     /// Whether this grant leaves the permission sandbox.
     pub fn is_unsafe(&self) -> bool {
         matches!(self, CapabilityGrant::Unsafe { .. })
@@ -363,6 +381,35 @@ fn validate_workspace_pattern(prefix: &str) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
+    /// The command palette filters on `mode` and the dock keys panels by
+    /// namespace, so both strings cross into TypeScript by value. A rename
+    /// here would silently empty the palette rather than fail to compile.
+    #[test]
+    fn the_strings_typescript_reads_are_stable() {
+        use super::*;
+
+        let json = serde_json::to_value(CommandDecl {
+            name: "chat".into(),
+            title: "Chat".into(),
+            mode: CommandMode::NoView,
+        })
+        .unwrap();
+        assert_eq!(json["mode"], "no-view");
+
+        assert_eq!(
+            CapabilityGrant::Workspace {
+                read: vec![],
+                write: vec![]
+            }
+            .namespace(),
+            "workspace"
+        );
+        assert_eq!(
+            CapabilityGrant::Unsafe { reason: "x".into() }.namespace(),
+            "process"
+        );
+    }
+
     use super::*;
     use std::fs;
     use std::path::Path;

@@ -31,6 +31,19 @@ function apiRoot(): string {
   return join(HERE, "..", "..", "extension-api");
 }
 
+/**
+ * Directory esbuild appends `/jsx-runtime` to.
+ *
+ * This must point at `src`, not the package root: the root has no
+ * `jsx-runtime` file, only a `package.json` `exports` entry mapping the
+ * subpath to `src/jsx-runtime.ts`, and esbuild does not apply an exports map
+ * to an absolute path. Both spellings land on the same module, so pinning the
+ * on-disk one keeps a single React without changing what gets loaded.
+ */
+function jsxRuntimeSource(): string {
+  return join(apiRoot(), "src");
+}
+
 export interface BundleOptions {
   /** Absolute path to the extension's entry module. */
   entryPoint: string;
@@ -71,7 +84,7 @@ export async function bundleExtension(options: BundleOptions): Promise<string> {
       platform: "neutral",
       target: "es2020",
       jsx: "automatic",
-      jsxImportSource: apiRoot(),
+      jsxImportSource: jsxRuntimeSource(),
       define: { "process.env.NODE_ENV": '"production"' },
       mainFields: ["module", "main"],
       conditions: ["import", "default"],

@@ -59,7 +59,18 @@ export interface RuntimeEvents {
   onTree(instanceId: string, tree: HostTree): void;
   onError(instanceId: string, message: string, fatal: boolean): void;
   onToast(style: string, title: string, message?: string): void;
+  /**
+   * Ask the user about a runtime-tier permission.
+   *
+   * Supplied by the React layer rather than built here so this module never
+   * reaches for a DOM. Rust refuses the call until a decision exists, so a
+   * host that cannot ask simply cannot proceed - it can never accidentally
+   * allow.
+   */
+  requestApproval(extensionId: string, permissionKey: string): Promise<PermissionChoice>;
 }
+
+export type PermissionChoice = "once" | "always" | "never";
 
 /**
  * Build a runtime over a set of installed extensions.
@@ -84,6 +95,8 @@ export async function createRuntime(
   const broker = createBroker({
     invoke: (command, args) => invoke(command, args),
     grants,
+    requestApproval: (extensionId, permissionKey) =>
+      events.requestApproval(extensionId, permissionKey),
     routeService: async (serviceName, method, args) => {
       const instanceId = providers.get(serviceName);
       if (!instanceId) {

@@ -29,6 +29,8 @@ import {
 } from "@/hooks/use-tabs";
 import { useTheme } from "@/hooks/use-theme";
 import { useFuzzySearch } from "./use-fuzzy-search";
+import { useExtensionCommands } from "@/components/extension-ui/use-extension-commands";
+import { useUIStore } from "@/stores/ui-store";
 import { useGlobalRecentFiles } from "@/hooks/use-global-recent-files";
 import { openStandaloneFile } from "@/hooks/use-open-drop";
 import { settingsKind } from "@/components/editor-area/page-kinds/settings";
@@ -62,6 +64,8 @@ function HighlightedPath({ path, indices }: { path: string; indices: number[] })
 export function CommandPalette() {
   const isOpen = useIsCommandPaletteOpen();
   const close = useCloseCommandPalette();
+  const extensionCommands = useExtensionCommands();
+  const setExtensionPanel = useUIStore((state) => state.setExtensionPanel);
   const openCommandPalette = useOpenCommandPalette();
   const intent = useCommandPaletteIntent();
   const search = useCommandPaletteSearch();
@@ -204,6 +208,19 @@ export function CommandPalette() {
         close();
       },
     },
+    // Extensions come last so an installed extension can never displace a
+    // built-in command a user is reaching for by muscle memory.
+    ...(isCompactFileMode
+      ? []
+      : extensionCommands.map((entry) => ({
+          id: `extension:${entry.panelId}`,
+          label: entry.title,
+          description: entry.extensionName,
+          run: () => {
+            setExtensionPanel(entry.panelId);
+            close();
+          },
+        }))),
   ].filter((c): c is Command => Boolean(c));
 
   const visibleFiles: SearchResult[] =

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@writer/extension-api",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["@writer/extension-api/globals"]
+  },
+  "include": ["."]
+}

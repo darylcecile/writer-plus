@@ -171,7 +171,7 @@ Design decisions, and why:
 | ------------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | Ambient      | own storage, own preferences, UI render, log                                                      | none — cannot touch user data                                        |
 | Install-time | `workspace.read` (glob-scoped), `network.domains` (explicit list), `embeddings`, `clipboard.read` | granted once at install, shown with reasons                          |
-| Runtime      | `workspace.write`, `workspace.delete`, `network.domains: ["*"]`                                   | prompted on first use, with "allow once / always / deny"             |
+| Runtime      | `workspace.write`, unrestricted `network` (empty host list)                                       | prompted on first use, with "allow once / always / deny"             |
 | **Unsafe**   | `unsafe` → `process.spawn` and friends                                                            | separate dialog, styled apart, with its own acknowledgement checkbox |
 
 **The `unsafe` tier is a trust decision, not a scope check.** Everything above it is
@@ -183,6 +183,19 @@ so a partial gate would imply a guarantee that does not exist. It is all-or-noth
 explicit consent, with the extension's stated reason shown verbatim.
 
 **Scopes are enforced in Rust against the canonicalized real path**, after symlink resolution, and must remain inside the workspace root. A `read: ["**/*.md"]` grant cannot escape via `../` or a symlink into `~/.ssh`.
+
+**Two corrections this table picked up during implementation.** There is no
+`workspace.delete` capability: the dispatcher exposes read, write, list, search, recent,
+findByName and root, and nothing deletes a note. It was removed from the table rather than
+invented, because a tier table listing a capability that does not exist quietly implies a
+gate that is not there. And unrestricted network is spelled as an _empty_ host list, not
+`["*"]` — `validate()` rejects a literal `*`, so a manifest written the way this table
+originally described it could never be installed at all.
+
+**The runtime gate runs after the manifest gate, and the order is a security property.**
+A capability the extension never declared is refused outright, never turned into a dialog.
+Reversing them would let any extension raise an alarming prompt for a permission it does not
+hold and harvest the click.
 
 ### Inter-extension services
 
