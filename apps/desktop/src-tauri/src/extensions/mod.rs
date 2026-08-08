@@ -16,7 +16,7 @@ use grants::GrantStore;
 use installer::{InstallCandidate, StagedInstall};
 use manifest::ExtensionManifest;
 use parking_lot::Mutex;
-use permissions::PermissionGate;
+use permissions::{PathResolution, PermissionGate};
 use registry::ExtensionRegistry;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -98,6 +98,54 @@ pub fn extension_install_manifest(
         serde_json::from_str(&json).map_err(|err| AppError::Invalid(err.to_string()))?;
     manifest.validate()?;
     registry.register(manifest, PathBuf::from(dir))
+}
+
+/// Resolves a path an extension named, for an action the *host* performs on the
+/// user's behalf - opening a note in the editor, or previewing one in a panel.
+///
+/// These actions grant the extension nothing: it never receives the file's
+/// contents, and it cannot observe whether this call succeeded. So they
+/// deliberately require no capability. What they must not become is a way to
+/// point the host at somewhere it should not look, which is why every such path
+/// funnels through here and through the same containment check that guards
+/// `workspace.read`. Without it an extension could render the user's private
+/// keys into a panel next to a persuasive sentence, and the host would have
+/// done it obligingly on the extension's say-so.
+///
+/// It is a separate command rather than a `PermissionGate` method precisely
+/// because there is no permission involved; folding it into the gate would
+/// imply a grant that is neither requested nor checked.
+/// The containment half of [`extension_resolve_note`], split out so it can be
+/// tested without a live webview. The command is untestable on its own (it
+/// needs a real `Webview` and `AppHandle`), and untested containment is how a
+/// traversal ships.
+fn resolve_note_path(root: &std::path::Path, path: &str) -> Result<String, AppError> {
+    let resolved = permissions::resolve_workspace_path(root, path, PathResolution::MustExist)?;
+    Ok(resolved.path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn extension_resolve_note(
+    extension_id: String,
+    path: String,
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+) -> Result<String, AppError> {
+    let registry = app.state::<ExtensionRegistry>();
+    let installed = registry
+        .get(&extension_id)
+        .ok_or_else(|| AppError::Denied(format!("extension {extension_id:?} is not installed")))?;
+    if !installed.enabled {
+        return Err(AppError::Denied(format!(
+            "extension {extension_id:?} is disabled"
+        )));
+    }
+
+    let workspace_state = app.state::<AppState>().get_or_create(webview.label());
+    let workspace_root = workspace_state.workspace_root.read().clone();
+    let root = workspace_root.ok_or(AppError::NoWorkspace)?;
+
+    resolve_note_path(&root, &path)
 }
 
 pub fn init(app: &tauri::AppHandle) {
@@ -758,6 +806,77 @@ mod live_update_tests {
                 updates::CHECK_INTERVAL_SECS
             ),
             "a check that just ran must not be due again, or the schedule is a per-launch poller"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_note_tests {
+    use super::*;
+    use std::fs;
+
+    /// A note inside the workspace resolves, so the containment check is not
+    /// simply refusing everything and passing by accident.
+    #[test]
+    fn a_note_inside_the_workspace_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "hi").unwrap();
+
+        let resolved = resolve_note_path(&root, "note.md").expect("a real note must resolve");
+        assert!(resolved.ends_with("note.md"));
+    }
+
+    #[test]
+    fn a_path_outside_the_workspace_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let outside = dir.path().parent().unwrap().join("outside.md");
+        fs::write(&outside, "secret").unwrap();
+
+        let err = resolve_note_path(&root, "../outside.md")
+            .expect_err("traversal above the workspace must be refused");
+        assert!(
+            matches!(err, AppError::Denied(_)),
+            "expected a denial, got {err:?}"
+        );
+    }
+
+    /// The one that matters. A symlink is the interesting attack because the
+    /// path *is* inside the workspace right up until the filesystem follows it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_escaping_the_workspace_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let secret = dir.path().join("id_rsa");
+        fs::write(&secret, "PRIVATE KEY").unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("innocent.md")).unwrap();
+
+        let err = resolve_note_path(&root, "innocent.md")
+            .expect_err("a symlink pointing outside the workspace must be refused");
+        assert!(
+            matches!(err, AppError::Denied(_)),
+            "expected a denial, got {err:?}"
+        );
+    }
+
+    /// An absolute path is not a shortcut around the root.
+    #[test]
+    fn an_absolute_path_outside_the_workspace_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let outside = dir.path().parent().unwrap().join("elsewhere.md");
+        fs::write(&outside, "secret").unwrap();
+
+        let err = resolve_note_path(&root, outside.to_str().unwrap())
+            .expect_err("an absolute path outside the workspace must be refused");
+        assert!(
+            matches!(err, AppError::Denied(_)),
+            "expected a denial, got {err:?}"
         );
     }
 }

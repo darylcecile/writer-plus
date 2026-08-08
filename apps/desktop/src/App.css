@@ -82,6 +82,20 @@
 
   --item-hover-bg: color-mix(in srgb, var(--fg-base) calc(var(--contrast) * 16%), transparent);
   --item-active-bg: color-mix(in srgb, var(--fg-base) calc(var(--contrast) * 26%), transparent);
+
+  /* Status hues. The rest of the palette is monochrome plus the user's accent,
+     and these are the one place that has to break that: "this deletes things"
+     must not look like "confirm", and it cannot be accent-derived because the
+     accent IS the affirmative colour and the user picks it - someone on a red
+     accent would get a delete action indistinguishable from a save one.
+
+     Fixed hues rather than fg-mixes, since a tint of the foreground carries no
+     meaning. These are the Radix Colors step-9 values, chosen because that step
+     is defined as the most saturated one that still holds contrast against both
+     light and dark app backgrounds. https://www.radix-ui.com/colors/docs/palette-composition/understanding-the-scale */
+  --danger: #e5484d;
+  --warning: #ffb224;
+  --success: #30a46c;
   --tab-active-bg: color-mix(in srgb, var(--fg-base) calc(var(--contrast) * 24%), transparent);
 
   --code-bg: color-mix(in srgb, var(--fg-base) calc(var(--contrast) * 16%), transparent);

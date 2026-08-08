@@ -272,7 +272,21 @@ Ported conceptually from Raycast, rendered with Writer's existing Tailwind/CSS-v
 
 - `List`, `List.Item`, `List.Section`, `List.EmptyView`, `List.Dropdown`
 - `Detail` (markdown, rendered through the app's existing renderer + DOMPurify), `Detail.Metadata`
-- `Form` + `TextField`, `PasswordField`, `TextArea`, `Dropdown`, `Checkbox`, `TagPicker`, `FilePicker`
+- `Form` + `TextField`, `PasswordField`, `TextArea`, `Dropdown`, `Checkbox`, `TagPicker`
+
+`Form.FilePicker` was specified here originally and has been **removed rather than
+implemented**. `workspace.read` is scoped to the vault precisely so an extension cannot
+reach `~/.ssh`; a native picker hands the extension absolute paths to files anywhere on
+the machine, which puts disclosure outside the permission model entirely - and does it
+through a dialog that looks to the user like their own choice rather than a grant.
+
+**Props carrying UI are hoisted by value, not by name.** The host walks each prop and
+lifts anything that is a React element (or an array containing one) into a named child
+slot. An earlier revision kept a hand-maintained list of prop names to hoist, which had
+two defects: the list silently fell behind the component types, and names are not unique
+across components - `target` is a subtree on `Action.Push` but a destination URL on
+`Detail.Metadata.Link`, so hoisting by name would have deleted every metadata link's
+destination.
 - `Grid`
 - `ActionPanel`, `Action`, `Action.Submenu`, and built-ins (`OpenNote`, `CopyToClipboard`, `OpenInBrowser`, `SubmitForm`, `Push`, `Pop`)
 - Writer-specific: `Chat` (message list + composer + streaming), `NotePreview`

@@ -11,7 +11,7 @@
  * Shape follows Raycast so the authoring model is familiar.
  */
 
-import { createElement, type ReactNode } from "react";
+import { createElement, isValidElement, type ReactNode } from "react";
 import type {
   ActionProps,
   ChatProps,
@@ -29,32 +29,65 @@ import type {
 type Factory<P> = (props: P & { children?: ReactNode }) => ReactNode;
 
 /**
- * Props that hold elements rather than data, in Raycast's authoring style
- * (`actions={<ActionPanel>...}`).
+ * True when a prop value is a subtree rather than data.
  *
- * React never renders a prop, and a React element is not serializable, so
- * these are hoisted into the children list here. The host identifies them by
- * child `type` (`ActionPanel`, `List.Dropdown`, `List.Item.Detail`), which is
- * unambiguous. Doing it in the library keeps the familiar authoring API while
- * leaving the reconciler with only real children to serialize.
+ * Elements are hoisted out of props and into the children list, because React
+ * never renders a prop and a React element is not serializable. The host then
+ * identifies them by child `type` (`ActionPanel`, `List.Dropdown`,
+ * `Detail.Metadata`), which is unambiguous - no renderer looks a hoisted
+ * subtree up by the prop name it arrived under.
+ *
+ * This is decided by **value, not by name**, and both halves of that matter:
+ *
+ * - By value, so the set cannot drift. A React element is a plain object, so
+ *   the reconciler's sanitizer walks any element left in props and emits a
+ *   gutted husk instead of rejecting it: the subtree never renders and nothing
+ *   is logged. A hand-maintained list of prop names is exactly the kind of
+ *   thing that silently falls behind `../types`, and did.
+ * - Not by name, because names collide across components. `Action.Push` takes
+ *   `target` as a subtree while `Detail.Metadata.Link` takes `target` as a URL
+ *   string; hoisting every `target` would strip the link's destination and
+ *   append it as stray text.
  */
-const ELEMENT_PROPS = ["actions", "searchBarAccessory", "detail"] as const;
+function isElementish(value: unknown): boolean {
+  if (isValidElement(value)) return true;
+  if (Array.isArray(value)) return value.some(isElementish);
+  return false;
+}
+
+/** @internal */
+export const HOST_COMPONENT = Symbol.for("writer.hostComponent");
+
+/** Every component type an extension can render. @internal */
+export function hostComponentType(value: unknown): string | undefined {
+  if (typeof value !== "function" && (typeof value !== "object" || value === null))
+    return undefined;
+  const tag = (value as Record<symbol, unknown>)[HOST_COMPONENT];
+  return typeof tag === "string" ? tag : undefined;
+}
 
 function host<P>(type: string): Factory<P> {
   const component = (props: P & { children?: ReactNode }) => {
     const rest = { ...(props as Record<string, unknown>) };
+    const children = rest.children as ReactNode;
+    delete rest.children;
+
     const hoisted: ReactNode[] = [];
-    for (const key of ELEMENT_PROPS) {
-      if (rest[key] != null) {
+    for (const key of Object.keys(rest)) {
+      if (isElementish(rest[key])) {
         hoisted.push(rest[key] as ReactNode);
         delete rest[key];
       }
     }
-    const children = rest.children as ReactNode;
-    delete rest.children;
     return createElement(type, rest, ...hoisted, children);
   };
   Object.defineProperty(component, "name", { value: type });
+  // Marks this as a renderable host component, as opposed to the capability
+  // functions that sit beside it in the same module. The host's drift test
+  // uses it to enumerate exactly what an extension can put on screen; a walker
+  // that went by `typeof value === "function"` would report `fs.read` as a
+  // component with no renderer and drown the real gaps in noise.
+  Object.defineProperty(component, HOST_COMPONENT, { value: type });
   return component;
 }
 
@@ -95,6 +128,18 @@ export const Detail = Object.assign(DetailRoot, {
 // ------------------------------------------------------------------- Form
 
 const FormRoot = host<FormProps>("Form");
+/**
+ * There is deliberately no `Form.FilePicker`.
+ *
+ * A native picker hands the extension absolute filesystem paths for anything
+ * the user selects, including files outside the workspace, and no capability
+ * covers that - `workspace.read` is scoped to the vault precisely so an
+ * extension cannot reach `~/.ssh`. Shipping one for API symmetry would put a
+ * path-disclosure primitive outside the permission model the whole system
+ * exists to enforce, and would do it through a dialog that looks like the
+ * user's own choice. If extensions ever need this, it needs its own capability
+ * and its own consent wording, not a component.
+ */
 
 export const Form = Object.assign(FormRoot, {
   TextField: host<FieldProps<string>>("Form.TextField"),
@@ -108,7 +153,6 @@ export const Form = Object.assign(FormRoot, {
   TagPicker: Object.assign(host<FieldProps<string[]>>("Form.TagPicker"), {
     Item: host<{ value: string; title: string }>("Form.TagPicker.Item"),
   }),
-  FilePicker: host<FieldProps<string[]> & { allowMultipleSelection?: boolean }>("Form.FilePicker"),
   Separator: host<Record<string, never>>("Form.Separator"),
   Description: host<{ title?: string; text: string }>("Form.Description"),
 });

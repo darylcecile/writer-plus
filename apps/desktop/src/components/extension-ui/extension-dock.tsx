@@ -34,7 +34,7 @@ export function ExtensionDock() {
         <button
           type="button"
           aria-label="Close extension panel"
-          className="rounded px-1.5 py-0.5 text-xs text-[var(--text-tertiary)] hover:bg-[var(--item-hover-bg)]"
+          className="rounded px-1.5 py-0.5 text-xs text-[var(--text-muted)] hover:bg-[var(--item-hover-bg)]"
           onClick={() => setExtensionPanel(null)}
         >
           ✕
@@ -90,7 +90,7 @@ function Message({ title, children }: { title: string; children: React.ReactNode
   return (
     <div className="p-4">
       <p className="text-sm text-[var(--text-secondary)]">{title}</p>
-      <p className="mt-1 text-xs text-[var(--text-tertiary)]">{children}</p>
+      <p className="mt-1 text-xs text-[var(--text-muted)]">{children}</p>
     </div>
   );
 }

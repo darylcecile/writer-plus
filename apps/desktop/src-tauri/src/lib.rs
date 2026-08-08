@@ -599,6 +599,7 @@ pub fn run() {
             extensions::extension_capability,
             extensions::extension_list,
             extensions::extension_install_manifest,
+            extensions::extension_resolve_note,
             extensions::extension_reap,
             extensions::extension_install_resolve,
             extensions::extension_install_commit,

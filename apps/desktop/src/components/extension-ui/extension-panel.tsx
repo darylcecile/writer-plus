@@ -1,16 +1,17 @@
 /**
  * Panel that hosts one running extension.
  *
- * Deliberately thin: it owns the committed tree and forwards events. All
- * policy (what an extension may do) lives in the broker and in Rust, not
- * here, so this component stays a dumb renderer even if an extension is
- * hostile.
+ * Deliberately thin: it owns the committed tree, the navigation stack, and
+ * event forwarding. All policy (what an extension may do) lives in the broker
+ * and in Rust, not here, so this component stays a dumb renderer even if an
+ * extension is hostile.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HostTree, JsonValue } from "@writer/extension-api/protocol";
+import type { HostNode, HostTree, JsonValue } from "@writer/extension-api/protocol";
 import type { ExtensionManager } from "@writer/extension-host";
+import { useHostEffects } from "./host-effects";
 import { ExtensionTree } from "./renderers";
 
 export interface ExtensionPanelProps {
@@ -22,8 +23,14 @@ export interface ExtensionPanelProps {
   error?: { message: string; fatal: boolean };
 }
 
+interface PushedView {
+  title: string;
+  node: HostNode;
+}
+
 export function ExtensionPanel({ manager, instanceId, command, tree, error }: ExtensionPanelProps) {
   const mounted = useRef(false);
+  const [stack, setStack] = useState<PushedView[]>([]);
 
   useEffect(() => {
     // Mount once per instance+command. Re-mounting on every render would
@@ -32,6 +39,15 @@ export function ExtensionPanel({ manager, instanceId, command, tree, error }: Ex
     mounted.current = true;
     manager.mount(instanceId, command, {});
   }, [manager, instanceId, command]);
+
+  const navigation = useMemo(
+    () => ({
+      push: (title: string, node: HostNode) => setStack((s) => [...s, { title, node }]),
+      pop: () => setStack((s) => s.slice(0, -1)),
+    }),
+    [],
+  );
+  const effects = useHostEffects(instanceId, navigation);
 
   const dispatch = useCallback(
     (handlerId: string, args: JsonValue[]) => {
@@ -47,7 +63,7 @@ export function ExtensionPanel({ manager, instanceId, command, tree, error }: Ex
           <p className="text-sm font-medium text-[var(--text-primary)]">
             This extension stopped running
           </p>
-          <p className="mt-1 text-xs text-[var(--text-tertiary)]">{error.message}</p>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">{error.message}</p>
         </div>
       </div>
     );
@@ -56,20 +72,34 @@ export function ExtensionPanel({ manager, instanceId, command, tree, error }: Ex
   if (!tree) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-xs text-[var(--text-tertiary)]">Loading…</p>
+        <p className="text-xs text-[var(--text-muted)]">Loading…</p>
       </div>
     );
   }
 
+  const top = stack[stack.length - 1];
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {error && !error.fatal ? (
-        <div className="border-b border-[var(--line-subtle)] px-3 py-1.5 text-xs text-[var(--text-tertiary)]">
+        <div className="border-b border-[var(--line-subtle)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
           {error.message}
         </div>
       ) : null}
+      {top ? (
+        <button
+          type="button"
+          className="flex items-center gap-1 border-b border-[var(--line-subtle)] px-3 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          onClick={navigation.pop}
+        >
+          ‹ <span className="truncate">{top.title}</span>
+        </button>
+      ) : null}
       <div className="min-h-0 flex-1">
-        <ExtensionTree root={tree.root} dispatch={dispatch} />
+        {/* A pushed view replaces the root rather than layering over it. The
+            extension keeps rendering underneath either way, so drawing both
+            would duplicate its search fields and action menus. */}
+        <ExtensionTree root={top ? [top.node] : tree.root} dispatch={dispatch} effects={effects} />
       </div>
     </div>
   );
@@ -167,7 +197,7 @@ export function VmSelfTestBadge() {
       data-testid="vm-self-test"
       data-engine={result?.engine ?? "pending"}
       data-ok={result ? String(result.ok) : "pending"}
-      className="pointer-events-none fixed bottom-2 left-2 z-50 rounded bg-[var(--item-hover-bg)] px-2 py-1 font-mono text-[10px] text-[var(--text-tertiary)]"
+      className="pointer-events-none fixed bottom-2 left-2 z-50 rounded bg-[var(--item-hover-bg)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]"
     >
       vm: {result ? `${result.engine} ${result.ok ? "ok" : `FAIL ${result.detail}`}` : "…"}
     </div>
