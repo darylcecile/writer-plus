@@ -7,6 +7,7 @@
  * hostile.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HostTree, JsonValue } from "@writer/extension-api/protocol";
 import type { ExtensionManager } from "@writer/extension-host";
@@ -74,6 +75,18 @@ export function ExtensionPanel({ manager, instanceId, command, tree, error }: Ex
   );
 }
 
+/**
+ * Sends the self-test result to Rust so it lands somewhere readable.
+ *
+ * The badge is inside the WebView being tested, so it cannot answer the
+ * question it exists to answer for anyone outside it. Reporting is deliberately
+ * fire-and-forget: a diagnostic that can itself fail the app is worse than no
+ * diagnostic, and the console line above still carries the result.
+ */
+function report(engine: string, ok: boolean, detail: string): void {
+  void invoke("extension_vm_self_test_report", { engine, ok, detail }).catch(() => {});
+}
+
 export interface DevSelfTestResult {
   engine: string;
   ok: boolean;
@@ -108,6 +121,7 @@ export function useVmSelfTest(enabled: boolean): DevSelfTestResult | null {
           // Logged so it also surfaces in the Tauri dev console, where the
           // badge is not readable from outside the WebView.
           console.info(`[extensions] VM self test: engine=${engine} value=${value}`);
+          report(engine, value === 2, `evaluated 1 + 1 = ${value}`);
           if (!cancelled) {
             setResult({
               engine,
@@ -120,6 +134,7 @@ export function useVmSelfTest(enabled: boolean): DevSelfTestResult | null {
         }
       } catch (err) {
         console.error("[extensions] VM self test failed", err);
+        report("none", false, err instanceof Error ? err.message : String(err));
         if (!cancelled) {
           setResult({
             engine: "none",

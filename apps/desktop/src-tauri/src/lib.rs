@@ -607,6 +607,7 @@ pub fn run() {
             extensions::extension_grant_set,
             extensions::extension_grants,
             extensions::extension_grant_revoke,
+            extensions::extension_vm_self_test_report,
             extensions::extension_token_save,
             extensions::extension_token_clear,
             extensions::extension_token_status,

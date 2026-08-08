@@ -318,6 +318,28 @@ fn label_grants(
         .collect()
 }
 
+/// Reports the VM self test's result out of the WebView.
+///
+/// WebKit enforces CSP for WebAssembly, and the app serves its policy as an
+/// HTTP header on `tauri://` - which no browser reproduces. So whether the
+/// sandbox actually starts in the shipped app is not something a browser test
+/// can answer, and the badge that answers it renders inside the very WebView
+/// in question. This is the only way the answer reaches anywhere it can be
+/// read: a terminal, or CI.
+///
+/// Failures are loud on purpose. A sandbox that silently does not start is the
+/// worst outcome available, because every layer above it - the manifest, the
+/// permission gate, the consent dialog - is built on the assumption that
+/// extension code is contained.
+#[tauri::command]
+pub fn extension_vm_self_test_report(engine: String, ok: bool, detail: String) {
+    if ok {
+        eprintln!("[extensions] VM self test passed: engine={engine} ({detail})");
+    } else {
+        eprintln!("[extensions] VM SELF TEST FAILED: engine={engine} ({detail})");
+    }
+}
+
 /// Take back one decision, returning the permission to "ask next time".
 ///
 /// Deliberately does not validate the extension or the key the way
