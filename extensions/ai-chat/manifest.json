@@ -1,0 +1,46 @@
+{
+  "id": "writer.ai-chat",
+  "name": "AI Chat",
+  "version": "0.1.0",
+  "description": "Ask questions about your notes using an AI agent you already have installed. Answers are grounded in your own writing, with sources you can open.",
+  "author": "writer",
+  "icon": "message",
+  "commands": [
+    {
+      "name": "chat",
+      "title": "Chat With Your Notes",
+      "subtitle": "Ask questions grounded in what you've written",
+      "mode": "view"
+    }
+  ],
+  "permissions": {
+    "capabilities": [
+      {
+        "name": "unsafe",
+        "reason": "Starts the AI assistant you choose (GitHub Copilot, Claude Code, Codex, or Gemini) as a separate program on your computer. That program runs with your full account access and Writer cannot restrict what it does."
+      },
+      { "name": "workspace", "read": ["**/*.md"] },
+      { "name": "storage", "shared": false }
+    ],
+    "usesServices": ["search"],
+    "providesServices": []
+  },
+  "preferences": [
+    {
+      "name": "harness",
+      "title": "AI assistant",
+      "type": "dropdown",
+      "default": "copilot",
+      "options": ["copilot", "claude", "codex", "gemini"],
+      "description": "Which locally installed agent to use. It must already be installed and signed in."
+    },
+    {
+      "name": "contextNotes",
+      "title": "Notes to retrieve per question",
+      "type": "dropdown",
+      "default": "6",
+      "options": ["3", "6", "10"],
+      "description": "More context gives better answers but costs more tokens."
+    }
+  ]
+}

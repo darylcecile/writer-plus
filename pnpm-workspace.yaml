@@ -3,6 +3,7 @@ packages:
   - apps/desktop/e2e
   - packages/*
   - tools/*
+  - extensions/*
 
 catalog:
   "@codemirror/autocomplete": ^6.20.0
@@ -16,24 +17,29 @@ catalog:
   "@codemirror/view": ^6.40.0
   "@hugeicons/core-free-icons": ^4.1.1
   "@hugeicons/react": ^1.1.6
+  "@jitl/quickjs-asmjs-mjs-release-sync": ^0.32.0
+  "@jitl/quickjs-wasmfile-release-sync": ^0.32.0
   "@lezer/common": ^1.4.0
   "@lezer/highlight": ^1.2.3
   "@lezer/markdown": ^1.6.1
   "@lezer/yaml": ^1.0.4
   "@tailwindcss/vite": ^4.2.2
   "@tanstack/devtools-vite": ^0.7.0
+  "@tauri-apps/api": ^2.11.1
   "@tauri-apps/plugin-clipboard-manager": ^2.3.2
-  "@tauri-apps/plugin-dialog": ^2.6.0
+  "@tauri-apps/plugin-dialog": ^2.7.2
   "@tauri-apps/plugin-store": ^2.4.2
   "@types/katex": ^0.16.7
-  "@types/node": ^24
+  "@types/node": ^24.13.2
   "@welldone-software/why-did-you-render": ^10.0.1
   beautiful-mermaid: ^1.1.3
   cmdk: ^1.1.1
   dompurify: ^3.4.7
+  esbuild: ^0.28.1
   katex: ^0.16.25
   motion: ^12.39.0
   node-emoji: ^2.2.0
+  quickjs-emscripten-core: ^0.32.0
   react-resizable-panels: ^4.7.4
   tailwindcss: ^4.2.2
   typescript: ^5

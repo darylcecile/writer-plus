@@ -4,6 +4,7 @@ import { EditorArea } from "./editor-area";
 import { EditorTabs } from "./editor-area/editor-tabs";
 import { SidebarToggleButton } from "./sidebar/sidebar-toggle-button";
 import { CompactFileLayout } from "./compact-file-layout";
+import { ExtensionDock } from "./extension-ui/extension-dock";
 import { useSidebar } from "@/hooks/use-sidebar";
 import { useWorkspaceChromeMode } from "@/hooks/use-workspace";
 
@@ -163,6 +164,7 @@ function WorkspaceLayout() {
           <div className="relative min-w-0 flex-1 bg-bg">
             <EditorArea />
           </div>
+          <ExtensionDock />
         </div>
       </div>
     </div>

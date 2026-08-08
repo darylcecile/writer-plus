@@ -15,6 +15,8 @@ import { useEditorStore } from "../src/stores/editor-store";
 import { useSettingsStore } from "../src/stores/settings-store";
 import { useUIStore } from "../src/stores/ui-store";
 import { useWorkspaceStore } from "../src/stores/workspace-store";
+import type { PendingOpenPayload } from "../src/lib/tauri";
+import type { DirEntry } from "../src/types/fs";
 import { toggleSidebar } from "../src/hooks/use-sidebar";
 import { toggleTheme } from "../src/hooks/use-theme";
 import { createPendingOpenDrainer, handleOpenPayload } from "../src/hooks/use-open-drop";
@@ -109,10 +111,19 @@ describe("workspace-store", () => {
 
   test("invalidatePath removes from cache", () => {
     useWorkspaceStore.setState({
-      directoryCache: new Map([
+      directoryCache: new Map<string, DirEntry[]>([
         [
           "/test",
-          [{ name: "a.md", path: "/test/a.md", is_dir: false, is_markdown: true, modified_at: 0 }],
+          [
+            {
+              name: "a.md",
+              path: "/test/a.md",
+              is_dir: false,
+              is_markdown: true,
+              modified_at: 0,
+              title: null,
+            },
+          ],
         ],
       ]),
     });
@@ -973,7 +984,7 @@ describe("createPendingOpenDrainer", () => {
       { workspace: "/a", file: null },
       { workspace: "/b", file: "/b/note.md" },
     ];
-    const handled: Array<{ workspace: string; file: string | null }> = [];
+    const handled: PendingOpenPayload[] = [];
     const drainPendingOpens = createPendingOpenDrainer(
       async () => queue.shift() ?? null,
       async (payload) => {
@@ -993,7 +1004,7 @@ describe("createPendingOpenDrainer", () => {
     type TestPayload = { workspace: string; file: null };
 
     const queue = [{ workspace: "/a", file: null }];
-    const handled: string[] = [];
+    const handled: Array<string | null> = [];
     let nextPollStarted: (() => void) | null = null;
     let blockOnEmpty = true;
     const nextPollResponse = createDeferred<TestPayload | null>();
@@ -1042,7 +1053,7 @@ describe("createPendingOpenDrainer", () => {
       { workspace: "/broken", file: null },
       { workspace: "/ok", file: null },
     ];
-    const handled: string[] = [];
+    const handled: Array<string | null> = [];
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const drainPendingOpens = createPendingOpenDrainer(
       async () => queue.shift() ?? null,

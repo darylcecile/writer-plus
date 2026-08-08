@@ -1,5 +1,6 @@
 import { AppLayout } from "./components/app-layout";
 import { CommandPalette } from "./components/command-palette";
+import { VmSelfTestBadge } from "./components/extension-ui/extension-panel";
 import { WelcomeScreen } from "./components/welcome";
 import { WindowTitle } from "./components/window-title";
 import { useWorkspace, useIsStartupResolved } from "./hooks/use-workspace";
@@ -31,6 +32,7 @@ function App() {
         <WindowTitle />
         <WelcomeScreen />
         <CommandPalette />
+        <VmSelfTestBadge />
       </>
     );
   }
@@ -40,6 +42,7 @@ function App() {
       <WindowTitle />
       <AppLayout />
       <CommandPalette />
+      <VmSelfTestBadge />
     </>
   );
 }

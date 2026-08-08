@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-import { useEditorStore } from "../src/stores/editor-store";
+import { type OpenFile, useEditorStore } from "../src/stores/editor-store";
 import * as editorApi from "../src/hooks/editor-api";
 
 function makeFileTab(id: string, currentPath: string) {
@@ -28,7 +28,7 @@ describe("editorApi", () => {
   });
 
   test("getOpenFiles returns current open files map", () => {
-    const files = new Map([
+    const files = new Map<string, OpenFile>([
       [
         "/test.md",
         {
@@ -60,7 +60,7 @@ describe("editorApi", () => {
   });
 
   test("closeFile delegates to store", () => {
-    const files = new Map([
+    const files = new Map<string, OpenFile>([
       [
         "/a.md",
         {
@@ -97,7 +97,7 @@ describe("editorApi", () => {
   });
 
   test("markSaved delegates to store", () => {
-    const files = new Map([
+    const files = new Map<string, OpenFile>([
       [
         "/a.md",
         {

@@ -35,9 +35,31 @@ thiserror = "2"
 trash = "5"
 base64 = "0.22"
 tauri-plugin-store = "2.4.2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1.9"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-webdriver = { version = "0.2", optional = true }
+# Already in the tree via tauri-plugin-updater; declared directly so the
+# extension installer does not depend on another crate's feature selection.
+# `rustls-no-provider` plus an explicit `rustls/ring` keeps the TLS provider a
+# decision we make rather than one we inherit. reqwest's own `rustls` feature
+# would pull in aws-lc-rs, adding a second native crypto library to a tree that
+# already builds ring.
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls-no-provider",
+  "charset",
+  "http2",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+sha2 = "0.10"
+semver = "1"
+keyring = "4"
+model2vec-rs = { version = "0.2", default-features = false, features = [
+  "fancy-regex",
+  "local-only",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

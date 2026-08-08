@@ -3,6 +3,8 @@ import { useAllSettings, useResetSetting, useSetSetting } from "@/hooks/use-sett
 import { SETTINGS_SCHEMA, type SettingDef } from "@/lib/settings-schema";
 import { SettingControl } from "./setting-control";
 import { ThemesSection } from "./themes-section";
+import { ExtensionsSection } from "./extensions-section";
+import { SemanticSection } from "./semantic-section";
 import { EditorScrollContainer } from "@/components/editor-area/editor-scroll-container";
 
 /** Section that renders above the Themes block. The schema-driven section
@@ -18,8 +20,10 @@ export function SettingsPanel({ isActive }: { isActive: boolean }) {
   const categories = useMemo(() => {
     const map = new Map<string, SettingDef[]>();
     for (const def of SETTINGS_SCHEMA) {
-      // Theme settings are owned by ThemesSection; keep them out of the generic renderer.
-      if (def.category === "Theme") continue;
+      // Theme settings are owned by ThemesSection, and the Extensions toggle by
+      // ExtensionsSection; keep both out of the generic renderer so neither
+      // category renders a second, disconnected heading.
+      if (def.category === "Theme" || def.category === "Extensions") continue;
       const existing = map.get(def.category) ?? [];
       existing.push(def);
       map.set(def.category, existing);
@@ -81,6 +85,10 @@ export function SettingsPanel({ isActive }: { isActive: boolean }) {
           <ThemesSection />
 
           {afterThemes.map(([cat, defs]) => renderSection(cat, defs))}
+
+          <SemanticSection />
+
+          <ExtensionsSection />
         </div>
       </EditorScrollContainer>
     </div>

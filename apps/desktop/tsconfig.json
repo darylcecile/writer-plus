@@ -19,8 +19,14 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "paths": { "@/*": ["./src/*"], "@shared/*": ["./shared/*"] }
+    "paths": { "@/*": ["./src/*"], "@shared/*": ["./shared/*"] },
+
+    /* `tests/` runs under Node and reads real source files off disk, which is
+       the only way to assert things the bundler erases (CSS imports are stubbed
+       to "" in the test env). Everything else here is browser-only; the app
+       code cannot reach Node APIs at runtime regardless of what typechecks. */
+    "types": ["node"]
   },
-  "include": ["src", "shared"],
+  "include": ["src", "shared", "tests"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

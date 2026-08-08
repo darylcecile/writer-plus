@@ -3,10 +3,12 @@ mod config;
 #[cfg(target_os = "macos")]
 mod dock_menu;
 mod error;
+mod extensions;
 mod ignore;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod open_target;
+mod semantic;
 mod state;
 #[cfg(desktop)]
 mod updater;
@@ -536,6 +538,10 @@ pub fn run() {
                 attach_window_handlers(app.handle(), &window);
             }
 
+            // Initialise the semantic vector index (non-fatal if it fails).
+            semantic::init(app.handle());
+            extensions::init(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -579,6 +585,35 @@ pub fn run() {
             commands::shell_install::install_cli,
             #[cfg(target_os = "macos")]
             commands::shell_install::uninstall_cli,
+            semantic::semantic_index_status,
+            semantic::semantic_reindex_all,
+            semantic::semantic_index_note,
+            semantic::semantic_remove_note,
+            semantic::semantic_search,
+            extensions::extension_check_updates,
+            extensions::extension_check_updates_if_due,
+            extensions::extension_update_status,
+            extensions::updates::extension_registry_list,
+            semantic::semantic_download_model,
+            semantic::semantic_model_status,
+            extensions::extension_capability,
+            extensions::extension_list,
+            extensions::extension_install_manifest,
+            extensions::extension_resolve_note,
+            extensions::extension_reap,
+            extensions::extension_install_resolve,
+            extensions::extension_install_commit,
+            extensions::extension_install_cancel,
+            extensions::extension_uninstall,
+            extensions::extension_runtime_list,
+            extensions::extension_permission_detail,
+            extensions::extension_grant_set,
+            extensions::extension_grants,
+            extensions::extension_grant_revoke,
+            extensions::extension_vm_self_test_report,
+            extensions::extension_token_save,
+            extensions::extension_token_clear,
+            extensions::extension_token_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

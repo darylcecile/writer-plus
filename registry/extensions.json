@@ -1,0 +1,20 @@
+{
+  "$comment": "Official extension registry. This is a lookup table only: it maps a name to a GitHub repository. The authoritative manifest, version, and bytes always come from that repository's own releases, so an entry here grants nothing and cannot change what an extension is allowed to do. Adding an entry is a pull request against this file.",
+  "version": 1,
+  "extensions": [
+    {
+      "id": "writer.semantic-index",
+      "name": "Semantic Index",
+      "author": "writer",
+      "description": "Builds and maintains a local vector index of your notes, and exposes semantic search to other extensions.",
+      "repo": "darylcecile/writer-plus"
+    },
+    {
+      "id": "writer.ai-chat",
+      "name": "AI Chat",
+      "author": "writer",
+      "description": "Ask questions about your notes using an AI agent you already have installed. Answers are grounded in your own writing, with sources you can open.",
+      "repo": "darylcecile/writer-plus"
+    }
+  ]
+}
