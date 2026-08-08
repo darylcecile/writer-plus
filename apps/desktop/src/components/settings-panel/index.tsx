@@ -20,8 +20,10 @@ export function SettingsPanel({ isActive }: { isActive: boolean }) {
   const categories = useMemo(() => {
     const map = new Map<string, SettingDef[]>();
     for (const def of SETTINGS_SCHEMA) {
-      // Theme settings are owned by ThemesSection; keep them out of the generic renderer.
-      if (def.category === "Theme") continue;
+      // Theme settings are owned by ThemesSection, and the Extensions toggle by
+      // ExtensionsSection; keep both out of the generic renderer so neither
+      // category renders a second, disconnected heading.
+      if (def.category === "Theme" || def.category === "Extensions") continue;
       const existing = map.get(def.category) ?? [];
       existing.push(def);
       map.set(def.category, existing);

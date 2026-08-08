@@ -325,6 +325,14 @@
       "category": "Search",
       "type": "number",
       "default": 50
+    },
+    {
+      "key": "extensions.auto-check-updates",
+      "label": "Check for extension updates automatically",
+      "description": "Ask GitHub once a day whether installed extensions have newer releases. Updates are never installed without asking. Off by default, because a check is a network request that uses your GitHub token if you have added one.",
+      "category": "Extensions",
+      "type": "boolean",
+      "default": false
     }
   ]
 }

@@ -542,6 +542,17 @@ body.tree-dragging [data-tree-path] {
   color: #d9534f;
 }
 
+/* The action the user came here to take.
+   Deliberately *not* used on the runtime permission prompt: that dialog
+   interrupts rather than being opened on purpose, and its broadest option
+   grants a capability permanently. Suggesting a default there would be the
+   dialog answering itself. */
+.extension-consent__actions .is-primary:not(:disabled),
+.extension-install__actions .is-primary:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* An update's permission diff. Distinct from the plain permission list because
    "this is new since you last agreed" is the only part of an update dialog a
    returning user actually needs to read. Amber rather than red: it is a

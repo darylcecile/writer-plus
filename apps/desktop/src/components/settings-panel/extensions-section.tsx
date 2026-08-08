@@ -18,11 +18,18 @@ import {
   type RegistryEntry,
   type UpdateReport,
   checkForUpdates,
+  checkForUpdatesIfDue,
+  describeCheckAge,
+  lastUpdateCheck,
   listOfficialExtensions,
   summarizeUpdates,
   uninstallExtension,
 } from "@/components/extension-ui/install";
+import { SETTINGS_SCHEMA } from "@/lib/settings-schema";
+import { useBooleanSetting, useSetSetting } from "@/hooks/use-settings";
 import { ExtensionGrants } from "./extension-grants";
+
+const AUTO_CHECK_KEY = "extensions.auto-check-updates";
 
 interface InstalledManifest {
   id: string;
@@ -42,6 +49,8 @@ export function ExtensionsSection() {
   const [checking, setChecking] = useState(false);
   const [request, setRequest] = useState<InstallRequest>(null);
   const [error, setError] = useState<string | null>(null);
+  const autoCheck = useBooleanSetting(AUTO_CHECK_KEY, false);
+  const setSetting = useSetSetting();
 
   const refresh = useCallback(async () => {
     try {
@@ -62,6 +71,27 @@ export function ExtensionsSection() {
       .then(setOfficial)
       .catch(() => setOfficial([]));
   }, [refresh]);
+
+  // Show what the last check found before doing anything else, so the section
+  // is never blank about updates while a network call is in flight.
+  //
+  // Only *runs* a check when the user has switched scheduled checks on. Rust
+  // still decides whether a day has passed, so opening Preferences repeatedly
+  // does not repeatedly hit GitHub.
+  useEffect(() => {
+    let cancelled = false;
+    const load = autoCheck ? checkForUpdatesIfDue() : lastUpdateCheck();
+    load
+      .then((report) => {
+        if (!cancelled) setUpdates(report);
+      })
+      // A background read must not put an error in front of someone who did
+      // not ask for one; the manual button reports properly.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [autoCheck]);
 
   const remove = useCallback(
     async (id: string) => {
@@ -162,24 +192,55 @@ export function ExtensionsSection() {
       </div>
 
       {installed.length > 0 && (
-        <div className="mb-4 flex items-center gap-3">
-          <button
-            type="button"
-            disabled={checking}
-            className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50"
-            onClick={() => void check()}
-          >
-            {checking ? "Checking\u2026" : "Check for updates"}
-          </button>
-          {summary.kind === "up-to-date" && (
-            <span className="text-[12px] text-[var(--text-muted)]">Everything is up to date.</span>
-          )}
-          {summary.kind === "partial" && (
-            <span className="text-[12px] text-[#d9534f]">
-              {summary.failed} extension{summary.failed === 1 ? "" : "s"} could not be checked.
-            </span>
-          )}
-        </div>
+        <>
+          <div className="mb-3 flex items-center gap-3">
+            <button
+              type="button"
+              disabled={checking}
+              className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50"
+              onClick={() => void check()}
+            >
+              {checking ? "Checking\u2026" : "Check for updates"}
+            </button>
+            {summary.kind === "up-to-date" && (
+              <span className="text-[12px] text-[var(--text-muted)]">
+                Everything is up to date.
+              </span>
+            )}
+            {summary.kind === "partial" && (
+              <span className="text-[12px] text-[#d9534f]">
+                {summary.failed} extension{summary.failed === 1 ? "" : "s"} could not be checked.
+              </span>
+            )}
+            {/* An up-to-date claim is only worth as much as its date. */}
+            {updates && (
+              <span className="text-[12px] text-[var(--text-muted)]">
+                Checked {describeCheckAge(updates.checkedAt)}.
+              </span>
+            )}
+          </div>
+
+          <div className="-mx-4 mb-4 flex items-center justify-between gap-4 rounded-2xl border border-[var(--line-subtler)] bg-[var(--surface-card)] px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-[13px] text-[var(--text-primary)]">{autoCheckLabel}</p>
+              <p className="text-[12px] text-[var(--text-muted)]">{autoCheckDescription}</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoCheck}
+              aria-label={autoCheckLabel}
+              onClick={() => void setSetting(AUTO_CHECK_KEY, !autoCheck)}
+              className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
+              style={{ backgroundColor: autoCheck ? "var(--link-color)" : "var(--border-color)" }}
+            >
+              <span
+                className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform duration-200 ease-out"
+                style={{ transform: autoCheck ? "translateX(16px)" : "translateX(0)" }}
+              />
+            </button>
+          </div>
+        </>
       )}
 
       {notInstalled.length > 0 && (
@@ -225,6 +286,18 @@ export function ExtensionsSection() {
     </section>
   );
 }
+
+/**
+ * The toggle's wording comes from the settings schema rather than being
+ * retyped here.
+ *
+ * `docs/consolidation.md`: one source of truth. A duplicated label drifts, and
+ * the copy that drifts is the one describing what a network request does with
+ * the user's GitHub token.
+ */
+const autoCheckDef = SETTINGS_SCHEMA.find((d) => d.key === AUTO_CHECK_KEY);
+const autoCheckLabel = autoCheckDef?.label ?? "Check for extension updates automatically";
+const autoCheckDescription = autoCheckDef?.description ?? "";
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

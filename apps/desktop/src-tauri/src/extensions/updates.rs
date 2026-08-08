@@ -16,10 +16,18 @@
 //! `installer::resolve` and `installer::commit`, so an update is consented to
 //! with the same permission diff as any other install. An extension cannot
 //! gain a capability by shipping a release.
+//!
+//! **Checking on a schedule is off by default.** A check is a network request
+//! to GitHub carrying the user's token if one is stored, and this app does not
+//! make network decisions on a user's behalf - the same reason the embedding
+//! model is downloaded on request rather than at first launch. When it is
+//! switched on, the interval is enforced *here* rather than by the caller, so
+//! the throttle cannot be lost by a UI that re-mounts.
 
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::github::{download_capped, http_client, GitHubClient, RepoRef};
 use super::installer::InstallRecord;
@@ -34,6 +42,16 @@ const REGISTRY_URL: &str =
 
 /// The registry is a small list of pointers; anything larger is wrong.
 const MAX_REGISTRY_BYTES: u64 = 256 * 1024;
+
+/// How long a scheduled check waits before running again.
+///
+/// Daily rather than per-launch: an extension release is not urgent, and an
+/// editor that is opened and closed twenty times a day should not produce
+/// twenty authenticated requests to GitHub.
+pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// Where the outcome of the last check is remembered.
+const LAST_CHECK_FILE: &str = "update-check.json";
 
 /// One entry in the official registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,13 +86,85 @@ async fn fetch_registry(url: &str) -> Result<Vec<RegistryEntry>, AppError> {
 }
 
 /// An installed extension with a newer release available.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailableUpdate {
     pub id: String,
     pub repo: String,
     pub installed_version: String,
     pub latest_version: String,
+}
+
+/// The outcome of one update check, and when it happened.
+///
+/// Persisted verbatim so a scheduled check and a manual one produce the same
+/// shape. Two shapes for the same answer is how a UI ends up rendering half of
+/// it - the empty consent dialog in this same system started that way.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReport {
+    /// Unix seconds. Shown to the user, because "no updates" is only
+    /// meaningful alongside when that was last true.
+    pub checked_at: u64,
+    pub available: Vec<AvailableUpdate>,
+    /// Extensions that could not be checked, so the UI can say so rather than
+    /// implying they are up to date.
+    pub errors: Vec<UpdateCheckError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckError {
+    pub id: String,
+    pub message: String,
+}
+
+/// Seconds since the Unix epoch, or 0 if the system clock predates it.
+pub fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Read the remembered outcome of the last check.
+///
+/// A missing or unreadable file simply means "never checked". Refusing to
+/// start over because a cache is corrupt would strand the user with no way to
+/// check again.
+pub fn last_check(dir: &Path) -> Option<UpdateReport> {
+    let bytes = std::fs::read(dir.join(LAST_CHECK_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Remember the outcome of a check.
+///
+/// A failure to write is deliberately not fatal: the check itself succeeded
+/// and the caller has the answer. The cost is re-checking sooner than
+/// necessary, which is strictly better than turning a working check into an
+/// error the user cannot act on.
+pub fn record_check(dir: &Path, report: &UpdateReport) {
+    if let Ok(bytes) = serde_json::to_vec(report) {
+        let _ = std::fs::write(dir.join(LAST_CHECK_FILE), bytes);
+    }
+}
+
+/// Whether a scheduled check should run now.
+///
+/// A timestamp in the future means the clock moved backwards - a timezone fix,
+/// a manual correction, or a dead RTC. Treating that as "not due yet" would
+/// silently disable update checks until real time caught up, so it counts as
+/// due instead. Being early once is recoverable; being stuck for months is not.
+pub fn is_due(last: Option<&UpdateReport>, now: u64, interval: u64) -> bool {
+    match last {
+        None => true,
+        Some(report) => {
+            if report.checked_at > now {
+                return true;
+            }
+            now - report.checked_at >= interval
+        }
+    }
 }
 
 /// Compare an installed version against the newest release of its repo.
@@ -218,6 +308,102 @@ mod tests {
         let read = install_record(dir.path()).expect("should read back");
         assert_eq!(read.repo, "owner/repo");
         assert_eq!(read.version, "1.2.3");
+    }
+
+    fn report(checked_at: u64) -> UpdateReport {
+        UpdateReport {
+            checked_at,
+            available: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_first_run_is_always_due() {
+        assert!(is_due(None, 1_000, CHECK_INTERVAL_SECS));
+    }
+
+    #[test]
+    fn a_recent_check_is_not_due_again() {
+        let last = report(1_000);
+        assert!(!is_due(
+            Some(&last),
+            1_000 + CHECK_INTERVAL_SECS - 1,
+            CHECK_INTERVAL_SECS
+        ));
+    }
+
+    #[test]
+    fn the_interval_boundary_counts_as_due() {
+        let last = report(1_000);
+        assert!(is_due(
+            Some(&last),
+            1_000 + CHECK_INTERVAL_SECS,
+            CHECK_INTERVAL_SECS
+        ));
+    }
+
+    /// A clock that moved backwards must not disable checking until real time
+    /// catches up. A timestamp a year in the future would otherwise mean no
+    /// update is ever offered again, with nothing on screen explaining why.
+    #[test]
+    fn a_timestamp_from_the_future_is_treated_as_due() {
+        let last = report(9_000_000);
+        assert!(
+            is_due(Some(&last), 1_000, CHECK_INTERVAL_SECS),
+            "a backwards clock must not strand the user on an old version"
+        );
+    }
+
+    #[test]
+    fn a_check_round_trips_through_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(last_check(dir.path()).is_none(), "nothing checked yet");
+
+        let written = UpdateReport {
+            checked_at: 4_242,
+            available: vec![AvailableUpdate {
+                id: "a.b".into(),
+                repo: "owner/repo".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: "1.1.0".into(),
+            }],
+            errors: vec![UpdateCheckError {
+                id: "c.d".into(),
+                message: "unreachable".into(),
+            }],
+        };
+        record_check(dir.path(), &written);
+
+        let read = last_check(dir.path()).expect("should read back");
+        assert_eq!(read.checked_at, 4_242);
+        assert_eq!(read.available.len(), 1);
+        assert_eq!(read.available[0].latest_version, "1.1.0");
+        assert_eq!(
+            read.errors.len(),
+            1,
+            "a failed check must survive a restart, or the next launch implies everything is current"
+        );
+    }
+
+    /// A corrupt cache must not be a dead end. Refusing to read it is fine;
+    /// refusing to check again because of it would leave no way to recover.
+    #[test]
+    fn a_corrupt_last_check_reads_as_never_checked_and_is_due() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(LAST_CHECK_FILE), b"{ truncated").unwrap();
+
+        let last = last_check(dir.path());
+        assert!(last.is_none());
+        assert!(is_due(last.as_ref(), now_secs(), CHECK_INTERVAL_SECS));
+    }
+
+    /// `now_secs` feeds the throttle, so a zero would make every check due
+    /// forever.
+    #[test]
+    fn the_clock_returns_a_real_epoch_time() {
+        // 2020-01-01, comfortably in the past but well clear of 0.
+        assert!(now_secs() > 1_577_836_800);
     }
 
     /// The registry file in this repo must parse into the struct the app reads

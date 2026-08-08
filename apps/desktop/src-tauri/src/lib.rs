@@ -591,6 +591,8 @@ pub fn run() {
             semantic::semantic_remove_note,
             semantic::semantic_search,
             extensions::extension_check_updates,
+            extensions::extension_check_updates_if_due,
+            extensions::extension_update_status,
             extensions::updates::extension_registry_list,
             semantic::semantic_download_model,
             semantic::semantic_model_status,

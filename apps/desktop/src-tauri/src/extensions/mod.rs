@@ -508,12 +508,69 @@ fn installed_from_repo(app: &tauri::AppHandle, repo_slug: &str) -> Option<String
 /// revoked token) must not read as "nothing has updates", so its error is
 /// returned alongside the successes instead of aborting the whole check.
 #[tauri::command]
-pub async fn extension_check_updates(app: tauri::AppHandle) -> Result<UpdateReport, AppError> {
-    let token = credentials::load()?;
+pub async fn extension_check_updates(
+    app: tauri::AppHandle,
+) -> Result<updates::UpdateReport, AppError> {
     let dir = extensions_dir(&app)?;
+    run_update_check(&dir, credentials::load()?).await
+}
 
+/// Run a check only if the interval has elapsed, returning what is known
+/// either way.
+///
+/// The caller decides *whether* checking on a schedule is wanted; this decides
+/// whether it is time. Splitting it that way keeps the throttle out of a React
+/// component, where a remount would reset it and turn "once a day" into "every
+/// time Preferences is opened".
+///
+/// A failed scheduled check is recorded, not raised. It runs without the user
+/// asking, so an error dialog on launch because the network is down would be
+/// noise - but it is still written down, so Preferences can show that the last
+/// attempt failed rather than implying everything is current.
+#[tauri::command]
+pub async fn extension_check_updates_if_due(
+    app: tauri::AppHandle,
+) -> Result<Option<updates::UpdateReport>, AppError> {
+    let dir = extensions_dir(&app)?;
+    let last = updates::last_check(&dir);
+    if !updates::is_due(
+        last.as_ref(),
+        updates::now_secs(),
+        updates::CHECK_INTERVAL_SECS,
+    ) {
+        return Ok(last);
+    }
+
+    match run_update_check(&dir, credentials::load()?).await {
+        Ok(report) => Ok(Some(report)),
+        Err(err) => {
+            eprintln!("[extensions] scheduled update check failed: {err}");
+            Ok(last)
+        }
+    }
+}
+
+/// What the last check found, without touching the network.
+#[tauri::command]
+pub fn extension_update_status(
+    app: tauri::AppHandle,
+) -> Result<Option<updates::UpdateReport>, AppError> {
+    Ok(updates::last_check(&extensions_dir(&app)?))
+}
+
+/// The check itself, shared by the manual and scheduled entry points so they
+/// cannot drift into reporting different things.
+///
+/// Takes the token rather than reading the Keychain, so a test can exercise a
+/// real check without depending on - or writing to - whatever the developer
+/// happens to have stored. A test that quietly reads real credentials passes
+/// or fails for reasons that have nothing to do with the code.
+async fn run_update_check(
+    dir: &std::path::Path,
+    token: Option<String>,
+) -> Result<updates::UpdateReport, AppError> {
     let mut sources = Vec::new();
-    for entry in std::fs::read_dir(&dir)?.flatten() {
+    for entry in std::fs::read_dir(dir)?.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
@@ -532,30 +589,20 @@ pub async fn extension_check_updates(app: tauri::AppHandle) -> Result<UpdateRepo
         match updates::check_one(&record, &id, token.clone()).await {
             Ok(Some(update)) => available.push(update),
             Ok(None) => {}
-            Err(err) => errors.push(UpdateCheckError {
+            Err(err) => errors.push(updates::UpdateCheckError {
                 id,
                 message: err.to_string(),
             }),
         }
     }
 
-    Ok(UpdateReport { available, errors })
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateReport {
-    pub available: Vec<updates::AvailableUpdate>,
-    /// Extensions that could not be checked, so the UI can say so rather than
-    /// implying they are up to date.
-    pub errors: Vec<UpdateCheckError>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateCheckError {
-    pub id: String,
-    pub message: String,
+    let report = updates::UpdateReport {
+        checked_at: updates::now_secs(),
+        available,
+        errors,
+    };
+    updates::record_check(dir, &report);
+    Ok(report)
 }
 
 /// Release any OS resources an extension instance still holds.
@@ -616,5 +663,101 @@ mod tests {
 
         assert_eq!(labelled[0].label, "workspace.write");
         assert!(!labelled[0].allowed);
+    }
+
+    /// Scheduled checks must be opt-in.
+    ///
+    /// This app does not decide to use someone's network for them - the same
+    /// reason the embedding model is downloaded on request. A default flipped
+    /// to `true` in passing would start sending the user's GitHub token to
+    /// github.com on every launch, and nothing in the UI would look different.
+    #[test]
+    fn scheduled_update_checks_are_off_unless_the_user_turns_them_on() {
+        let schema = crate::config::settings_schema();
+        let def = schema
+            .iter()
+            .find(|d| d.key == "extensions.auto-check-updates")
+            .expect("the preference must exist in the schema Rust and the UI share");
+
+        assert!(
+            matches!(def.default, crate::config::ConfigValue::Bool(false)),
+            "expected a boolean default of false, got {:?}",
+            def.default
+        );
+        assert!(
+            def.description.contains("token"),
+            "the wording must say what the request carries, not just that it happens"
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_update_tests {
+    //! The scheduled check against a real release. `#[ignore]`d because it
+    //! needs network. Run with:
+    //! `GITHUB_TOKEN=$(gh auth token) cargo test --lib live_update -- --ignored --nocapture`
+    //!
+    //! The unit tests pin `is_due` against synthetic timestamps, which proves
+    //! the arithmetic but not that a check ever writes the timestamp it later
+    //! reads. That seam is exactly where a throttle silently becomes a
+    //! per-launch poller: every individual piece passes and the interval is
+    //! never actually observed.
+
+    use super::*;
+    use crate::extensions::installer::InstallRecord;
+
+    #[tokio::test]
+    #[ignore = "network + private fixture"]
+    async fn a_real_check_records_its_result_and_is_not_due_again() {
+        assert!(
+            std::env::var("GITHUB_TOKEN").is_ok(),
+            "set GITHUB_TOKEN=$(gh auth token)"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ext = dir.path().join("live.test");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            ext.join("install.json"),
+            serde_json::to_vec(&InstallRecord {
+                repo: "darylcecile/writer-ext-live-test".into(),
+                version: "0.0.1".into(),
+                bundle_sha256: String::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = run_update_check(dir.path(), std::env::var("GITHUB_TOKEN").ok())
+            .await
+            .expect("check failed");
+        println!(
+            "checked_at={} available={} errors={:?}",
+            report.checked_at,
+            report.available.len(),
+            report.errors
+        );
+        assert!(
+            report.errors.is_empty(),
+            "the fixture repo must be reachable"
+        );
+        assert_eq!(
+            report.available.len(),
+            1,
+            "0.0.1 is behind the real release"
+        );
+
+        let persisted = updates::last_check(dir.path()).expect("the check must be written down");
+        assert_eq!(persisted.checked_at, report.checked_at);
+        assert_eq!(persisted.available.len(), 1);
+
+        assert!(
+            !updates::is_due(
+                Some(&persisted),
+                updates::now_secs(),
+                updates::CHECK_INTERVAL_SECS
+            ),
+            "a check that just ran must not be due again, or the schedule is a per-launch poller"
+        );
     }
 }

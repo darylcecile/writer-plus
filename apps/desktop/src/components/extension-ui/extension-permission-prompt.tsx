@@ -72,7 +72,12 @@ export function ExtensionPermissionPrompt({ request, onDecide }: ExtensionPermis
         <button type="button" onClick={() => onDecide("once")}>
           Allow once
         </button>
-        <button type="button" className="is-primary" onClick={() => onDecide("always")}>
+        {/*
+          No primary styling. This dialog interrupts rather than being opened
+          deliberately, and "always" grants the capability permanently - so
+          highlighting it would be the prompt answering its own question.
+        */}
+        <button type="button" onClick={() => onDecide("always")}>
           Always allow
         </button>
       </footer>

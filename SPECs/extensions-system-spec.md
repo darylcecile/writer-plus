@@ -303,12 +303,22 @@ repository's own releases, so an entry cannot change what an extension may do an
 the consent flow. Installing from the registry, typing `owner/repo`, and applying an update are
 one code path with one consent dialog - a second, more trusted path is where trust bugs live.
 
-**Update checks are on demand, and report rather than install.** A check compares the installed
+**Update checks report rather than install.** A check compares the installed
 version against the newest release of the repo recorded in `install.json` at install time.
 Applying an update still goes through `resolve`/`commit`, so an extension cannot widen its
 permissions by publishing a release. Per-extension failures are surfaced individually: a revoked
 token or a renamed repository must never be presented as "up to date", because that leaves a
 user stranded on a stale version while being told they are current.
+
+**Checking on a schedule is opt-in and off by default.** A check is a network request to GitHub
+carrying the user's token if one is stored, and this app does not spend a user's network or
+credentials without being asked - the same reason the embedding model is downloaded on request
+rather than at first launch. `extensions.auto-check-updates` turns it on; the interval (24h) is
+enforced in Rust rather than by the caller, so a UI remount cannot turn "once a day" into "every
+time Preferences is opened". The outcome is persisted to `update-check.json`, so a scheduled
+failure is still visible in Preferences instead of the next launch implying everything is
+current. A timestamp in the future - a clock that moved backwards - counts as due, because the
+alternative is silently disabling update checks until real time catches up.
 
 Version comparison is numeric per component, not lexical - a string compare makes `0.10.0` look
 older than `0.9.0`, which would silently pin a user forever. Prereleases sort before the release
@@ -332,7 +342,8 @@ The asset endpoint is used rather than `browser_download_url` because the latter
 
 **Permission diffs on update are mandatory.** If v2 requests a capability v1 did not have, the update does not auto-apply; the user sees a diff and must re-consent. This is the single most important supply-chain control in the design — it turns "the extension you trusted quietly gained network access" into an explicit decision.
 
-Updates are checked on launch and on demand, never applied silently when permissions change.
+Updates are checked on demand, and daily if the user opts in. They are never applied
+silently, whether or not permissions changed.
 
 ## AI Chat (first core extension)
 
@@ -445,14 +456,14 @@ Stating this explicitly, because a security model that isn't honest about its ed
 
 Each phase is independently shippable and leaves the app in a working state.
 
-| Phase                           | Status                                                                                                                                                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                        |
-| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                        |
-| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding |
-| 4 — Distribution                | **Built.** Install and update by `owner/repo` from GitHub releases, official registry, on-demand update checks, permission-diff re-consent, keychain-stored PAT for private repos, uninstall    |
-| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                        |
-| 6 — Polish                      | **Not started**                                                                                                                                                                                 |
+| Phase                           | Status                                                                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                                      |
+| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                                      |
+| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding               |
+| 4 — Distribution                | **Built.** Install and update by `owner/repo` from GitHub releases, official registry, on-demand and opt-in daily update checks, permission-diff re-consent, keychain-stored PAT for private repos, uninstall |
+| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                                      |
+| 6 — Polish                      | **Not started**                                                                                                                                                                                               |
 
 Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog
 stayed unreachable until installation existed. Both are now wired to Preferences → Extensions.

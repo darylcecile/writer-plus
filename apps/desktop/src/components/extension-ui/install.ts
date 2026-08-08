@@ -111,6 +111,8 @@ export interface UpdateCheckError {
 }
 
 export interface UpdateReport {
+  /** Unix seconds. "Nothing to update" only means something with a date on it. */
+  checkedAt: number;
   available: AvailableUpdate[];
   /**
    * Reported separately from `available` so the UI can say an extension could
@@ -129,6 +131,29 @@ export interface UpdateReport {
  */
 export function checkForUpdates(): Promise<UpdateReport> {
   return invoke<UpdateReport>("extension_check_updates");
+}
+
+/**
+ * Run a check only if a day has passed, otherwise return what is already
+ * known.
+ *
+ * Whether to call this at all is the user's choice, held in
+ * `extensions.auto-check-updates` and off by default. The interval is enforced
+ * in Rust rather than here: a throttle living in a React component resets on
+ * every remount, which turns "once a day" into "every time Preferences is
+ * opened".
+ *
+ * Resolves rather than rejects when the check fails, since it runs without the
+ * user asking - the failure is recorded and shown in Preferences instead of
+ * interrupting them.
+ */
+export function checkForUpdatesIfDue(): Promise<UpdateReport | null> {
+  return invoke<UpdateReport | null>("extension_check_updates_if_due");
+}
+
+/** What the last check found, without touching the network. */
+export function lastUpdateCheck(): Promise<UpdateReport | null> {
+  return invoke<UpdateReport | null>("extension_update_status");
 }
 
 /** An entry in the official registry. */
@@ -176,4 +201,25 @@ export function summarizeUpdates(report: UpdateReport | null): UpdateSummary {
   if (failed > 0) return { kind: "partial", count, failed };
   if (count > 0) return { kind: "updates", count };
   return { kind: "up-to-date" };
+}
+
+/**
+ * How long ago a check ran, in words.
+ *
+ * Shown because "everything is up to date" is only trustworthy alongside when
+ * that was established - a stale answer from a scheduled check three weeks ago
+ * reads identically to a fresh one otherwise.
+ *
+ * A timestamp in the future means the clock moved; saying "just now" is more
+ * honest than rendering a negative duration.
+ */
+export function describeCheckAge(checkedAt: number, now = Date.now()): string {
+  const seconds = Math.floor(now / 1000) - checkedAt;
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }

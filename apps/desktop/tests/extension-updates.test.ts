@@ -9,9 +9,14 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import { type UpdateReport, summarizeUpdates } from "../src/components/extension-ui/install";
+import {
+  type UpdateReport,
+  describeCheckAge,
+  summarizeUpdates,
+} from "../src/components/extension-ui/install";
 
 const report = (over: Partial<UpdateReport> = {}): UpdateReport => ({
+  checkedAt: 1_700_000_000,
   available: [],
   errors: [],
   ...over,
@@ -55,5 +60,39 @@ describe("summarizeUpdates", () => {
         report({ available: [update("a")], errors: [{ id: "b", message: "not found" }] }),
       ),
     ).toEqual({ kind: "partial", count: 1, failed: 1 });
+  });
+});
+
+/**
+ * The age of a check is part of the claim it makes. "Everything is up to date"
+ * from a scheduled run three weeks ago and one from a moment ago read
+ * identically without it, and only one of them is worth believing.
+ */
+describe("describeCheckAge", () => {
+  const at = 1_700_000_000;
+  const nowMs = (offsetSeconds: number) => (at + offsetSeconds) * 1000;
+
+  it("calls a fresh check just now", () => {
+    expect(describeCheckAge(at, nowMs(0))).toBe("just now");
+    expect(describeCheckAge(at, nowMs(59))).toBe("just now");
+  });
+
+  it("switches units at each boundary", () => {
+    expect(describeCheckAge(at, nowMs(60))).toBe("1 minute ago");
+    expect(describeCheckAge(at, nowMs(60 * 60))).toBe("1 hour ago");
+    expect(describeCheckAge(at, nowMs(24 * 60 * 60))).toBe("1 day ago");
+  });
+
+  it("pluralizes", () => {
+    expect(describeCheckAge(at, nowMs(120))).toBe("2 minutes ago");
+    expect(describeCheckAge(at, nowMs(3 * 24 * 60 * 60))).toBe("3 days ago");
+  });
+
+  /**
+   * A clock that moved backwards must not render "-4 hours ago", which reads
+   * as a bug in the app rather than a wrong clock.
+   */
+  it("does not render a negative age when the clock moved backwards", () => {
+    expect(describeCheckAge(at, nowMs(-60 * 60 * 4))).toBe("just now");
   });
 });
