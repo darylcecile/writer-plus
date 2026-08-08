@@ -594,6 +594,13 @@ pub fn run() {
             extensions::extension_list,
             extensions::extension_install_manifest,
             extensions::extension_reap,
+            extensions::extension_install_resolve,
+            extensions::extension_install_commit,
+            extensions::extension_install_cancel,
+            extensions::extension_uninstall,
+            extensions::extension_token_save,
+            extensions::extension_token_clear,
+            extensions::extension_token_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

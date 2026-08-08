@@ -278,7 +278,11 @@ Deliberately Obsidian's model — **no CDN, no Writer-operated servers** — bec
 4. Download `manifest.json` + `extension.js`
 5. Record `sha256` of the bundle at install; on update, show the version delta
 
-**Private extensions:** the user supplies a fine-grained GitHub PAT. Private assets are fetched via `GET /repos/{owner}/{repo}/releases/assets/{id}` with `Accept: application/octet-stream`. Access is enforced by GitHub — if the user can't read the repo, they can't install it. The token is stored in the OS keychain, never in settings JSON, and is only ever sent to `api.github.com`.
+**Private extensions:** the user supplies a fine-grained GitHub PAT. Private assets are fetched via `GET /repos/{owner}/{repo}/releases/assets/{id}` with `Accept: application/octet-stream`. Access is enforced by GitHub — if the user can't read the repo, they can't install it. The token is stored in the OS keychain (`keyring`, service `app.writer.extensions`), never in settings JSON, and is only ever sent to `api.github.com`.
+
+The token is also never handed to the frontend. `extension_install_resolve` reads it from the keychain itself rather than accepting it as an argument, and there is no command to read it back — the UI can save, clear, and ask _whether_ one exists. This matters because the WebView that would otherwise hold the token is the same WebView that renders extension UI code.
+
+The asset endpoint is used rather than `browser_download_url` because the latter is unauthenticated and fails for private repos; using one path for both means the private case is exercised by every public install.
 
 **Permission diffs on update are mandatory.** If v2 requests a capability v1 did not have, the update does not auto-apply; the user sees a diff and must re-consent. This is the single most important supply-chain control in the design — it turns "the extension you trusted quietly gained network access" into an explicit decision.
 
@@ -395,16 +399,17 @@ Stating this explicitly, because a security model that isn't honest about its ed
 
 Each phase is independently shippable and leaves the app in a working state.
 
-| Phase                           | Status                                                                                                                                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                  |
-| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                  |
-| 3 — Permissions and preferences | **Partly built.** The Rust gate, manifest model, and consent-dialog component all exist and are tested; **nothing renders the dialog yet** because there is no install flow to trigger it |
-| 4 — Distribution                | **Not started**                                                                                                                                                                           |
-| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                  |
-| 6 — Polish                      | **Not started**                                                                                                                                                                           |
+| Phase                           | Status                                                                                                                                                                                                                        |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                                                      |
+| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                                                      |
+| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding                               |
+| 4 — Distribution                | **Mostly built.** Install and update by `owner/repo` from GitHub releases, permission-diff re-consent, keychain-stored PAT for private repos, uninstall. The official registry file and scheduled update checks are not built |
+| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                                                      |
+| 6 — Polish                      | **Not started**                                                                                                                                                                                                               |
 
-Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog stays unreachable until installation exists.
+Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog
+stayed unreachable until installation existed. Both are now wired to Preferences → Extensions.
 
 **Phase 1 — Sandbox foundation.** Extension host worker; QuickJS runtime lifecycle with memory/interrupt budgets, scope-based handle management, module loader (default-deny, only `@writer/api`). Capability broker skeleton with exactly one capability (`workspace.read`) end to end, gated in Rust. Local folder loading only, no distribution. Contract test asserting committed trees are JSON-serializable.
 
@@ -441,7 +446,14 @@ Rust backend:
 
 Shared / docs:
 
-- `apps/desktop/shared/extension.schema.json` — manifest contract, single source of truth for Rust + TS (mirrors the existing `settings.schema.json` pattern)
+- `apps/desktop/src-tauri/src/extensions/manifest.rs` — **the** manifest contract. The Rust
+  structs are the schema; serde enforces shape, `validate()` enforces rules, and
+  `describe_permissions()` produces the consent wording. All three live together so the
+  sentence a user reads is derived by the same module that grants the permission.
+  A hand-written `extension.schema.json` was tried and deleted: nothing consumed it, and it had
+  already drifted far enough to reject the shipped `writer.ai-chat` manifest. If an
+  author-facing JSON Schema is wanted for editor autocomplete it must be _generated_ from these
+  structs (e.g. `schemars`), never maintained alongside them.
 - `registry/extensions.json`
 - `docs/extensions.md`, `docs/extension-authoring.md`
 

@@ -531,6 +531,7 @@ mod tests {
             version: "1.0.0".to_string(),
             description: "Test extension".to_string(),
             author: "Writer".to_string(),
+            min_writer_version: None,
             commands: vec![CommandDecl {
                 name: "open".to_string(),
                 title: "Open".to_string(),
