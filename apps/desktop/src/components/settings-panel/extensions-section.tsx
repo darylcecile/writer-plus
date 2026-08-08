@@ -22,6 +22,7 @@ import {
   summarizeUpdates,
   uninstallExtension,
 } from "@/components/extension-ui/install";
+import { ExtensionGrants } from "./extension-grants";
 
 interface InstalledManifest {
   id: string;
@@ -134,6 +135,7 @@ export function ExtensionsSection() {
                       Could not check for updates: {failed.message}
                     </p>
                   )}
+                  <ExtensionGrants extensionId={extension.id} />
                 </div>
                 <div className="flex shrink-0 gap-3">
                   {update && (

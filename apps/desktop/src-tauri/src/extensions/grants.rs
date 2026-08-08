@@ -150,14 +150,44 @@ impl GrantStore {
 
     /// Every persisted decision for one extension, so the UI can show and
     /// revoke them.
+    ///
+    /// Sorted, because a `HashMap` iterates in an arbitrary order and a list of
+    /// permissions that reshuffles itself between openings is one a user cannot
+    /// scan for a change.
     pub fn list(&self, extension_id: &str) -> Vec<(String, bool)> {
-        self.stored
+        let mut out: Vec<(String, bool)> = self
+            .stored
             .lock()
             .expect("grants poisoned")
             .decisions
             .get(extension_id)
             .map(|keys| keys.iter().map(|(k, v)| (k.clone(), *v)).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Undo one decision, returning the permission to "ask next time".
+    ///
+    /// This clears the session grant as well as the persisted one. A user who
+    /// revokes a permission means now, not next launch; leaving an "allow once"
+    /// in place would let the extension keep going for the rest of the session
+    /// and make the button a lie.
+    pub fn revoke(&self, extension_id: &str, key: &str) {
+        if let Some(keys) = self
+            .stored
+            .lock()
+            .expect("grants poisoned")
+            .decisions
+            .get_mut(extension_id)
+        {
+            keys.remove(key);
+        }
+        self.session
+            .lock()
+            .expect("session grants poisoned")
+            .remove(&(extension_id.to_string(), key.to_string()));
+        self.persist();
     }
 
     /// Best-effort write.
@@ -290,6 +320,88 @@ mod tests {
             GrantState::NeedsApproval
         );
         assert_eq!(store.state("a", "network"), GrantState::NeedsApproval);
+    }
+
+    #[test]
+    fn revoking_returns_a_permission_to_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grants.json");
+        let store = GrantStore::load(&path);
+        store.record("ext", "workspace.write", Decision::Always);
+        store.revoke("ext", "workspace.write");
+
+        assert_eq!(
+            store.state("ext", "workspace.write"),
+            GrantState::NeedsApproval
+        );
+        assert_eq!(
+            GrantStore::load(&path).state("ext", "workspace.write"),
+            GrantState::NeedsApproval,
+            "the revocation must reach disk"
+        );
+    }
+
+    /// Revoking has to take effect now, not at next launch. A session-only
+    /// "allow once" left behind would let the extension keep going for the rest
+    /// of the session while the UI showed the permission as revoked.
+    #[test]
+    fn revoking_also_clears_an_allow_once() {
+        let store = GrantStore::default();
+        store.record("ext", "workspace.write", Decision::Once);
+        assert_eq!(store.state("ext", "workspace.write"), GrantState::Allowed);
+
+        store.revoke("ext", "workspace.write");
+        assert_eq!(
+            store.state("ext", "workspace.write"),
+            GrantState::NeedsApproval
+        );
+    }
+
+    /// A "never" is a decision too, and the user must be able to take it back
+    /// without reinstalling the extension.
+    #[test]
+    fn a_denial_can_be_revoked() {
+        let store = GrantStore::default();
+        store.record("ext", "workspace.write", Decision::Never);
+        assert_eq!(store.state("ext", "workspace.write"), GrantState::Denied);
+
+        store.revoke("ext", "workspace.write");
+        assert_eq!(
+            store.state("ext", "workspace.write"),
+            GrantState::NeedsApproval
+        );
+    }
+
+    #[test]
+    fn revoking_one_permission_leaves_the_others_alone() {
+        let store = GrantStore::default();
+        store.record("ext", "workspace.write", Decision::Always);
+        store.record("ext", "network", Decision::Always);
+        store.record("other", "workspace.write", Decision::Always);
+
+        store.revoke("ext", "workspace.write");
+
+        assert_eq!(store.state("ext", "network"), GrantState::Allowed);
+        assert_eq!(store.state("other", "workspace.write"), GrantState::Allowed);
+    }
+
+    /// An arbitrary `HashMap` order would reshuffle the permission list between
+    /// openings, which is exactly the surface a user needs to scan for changes.
+    #[test]
+    fn the_listing_is_ordered() {
+        let store = GrantStore::default();
+        store.record("ext", "workspace.write", Decision::Always);
+        store.record("ext", "network", Decision::Never);
+        store.record("ext", "clipboard", Decision::Always);
+
+        assert_eq!(
+            store.list("ext"),
+            vec![
+                ("clipboard".to_string(), true),
+                ("network".to_string(), false),
+                ("workspace.write".to_string(), true),
+            ]
+        );
     }
 
     /// The whole point of "once": it must not become "always" by being written

@@ -273,18 +273,69 @@ pub fn extension_grant_set(
 /// Persisted runtime decisions for one extension, so they can be reviewed and
 /// revoked. A permission granted once and never surfaced again is a permission
 /// the user has effectively lost control of.
+///
+/// Each record carries Writer's own wording for the permission where the
+/// manifest still describes it, so the review list reads the same as the dialog
+/// the decision was made in. A key the manifest no longer mentions is still
+/// listed, under its raw key: a decision that outlived the declaration is
+/// exactly the one a user most needs to be able to see and take back.
 #[tauri::command]
 pub fn extension_grants(extension_id: String, app: tauri::AppHandle) -> Vec<GrantRecord> {
-    app.state::<GrantStore>()
-        .list(&extension_id)
+    let described = app
+        .state::<ExtensionRegistry>()
+        .get(&extension_id)
+        .map(|installed| installed.manifest.describe_permissions());
+
+    label_grants(
+        app.state::<GrantStore>().list(&extension_id),
+        described.as_deref(),
+    )
+}
+
+/// Joins recorded decisions to the wording the user was shown.
+///
+/// Pulled out of the command so it can be tested without an `AppHandle`. The
+/// fallback is the interesting half: a key the manifest no longer describes
+/// still has to appear, because a decision that outlived its declaration is
+/// precisely the one a user most needs to see and take back.
+fn label_grants(
+    recorded: Vec<(String, bool)>,
+    described: Option<&[manifest::PermissionDescription]>,
+) -> Vec<GrantRecord> {
+    recorded
         .into_iter()
-        .map(|(key, allowed)| GrantRecord { key, allowed })
+        .map(|(key, allowed)| {
+            let label = described
+                .and_then(|all| all.iter().find(|d| d.key == key))
+                .map(|d| d.label.clone())
+                .unwrap_or_else(|| key.clone());
+            GrantRecord {
+                key,
+                label,
+                allowed,
+            }
+        })
         .collect()
+}
+
+/// Take back one decision, returning the permission to "ask next time".
+///
+/// Deliberately does not validate the extension or the key the way
+/// `extension_grant_set` does. Granting must be checked against the manifest;
+/// revoking can only ever reduce access, so a stale key or an extension whose
+/// manifest has since changed must not be a reason to refuse. A permission a
+/// user cannot take back is not one they ever really granted.
+#[tauri::command]
+pub fn extension_grant_revoke(extension_id: String, key: String, app: tauri::AppHandle) {
+    app.state::<GrantStore>().revoke(&extension_id, &key);
 }
 
 #[derive(serde::Serialize)]
 pub struct GrantRecord {
     pub key: String,
+    /// Writer's wording, falling back to the raw key if the manifest no longer
+    /// describes it.
+    pub label: String,
     pub allowed: bool,
 }
 
@@ -496,4 +547,52 @@ pub struct UpdateCheckError {
 pub fn extension_reap(extension_id: String, app: tauri::AppHandle) {
     use tauri::Manager as _;
     app.state::<process::ProcessTable>().reap(&extension_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn described(key: &str, label: &str) -> manifest::PermissionDescription {
+        manifest::PermissionDescription {
+            key: key.into(),
+            label: label.into(),
+            detail: String::new(),
+            reason: None,
+            tier: manifest::PermissionTier::Runtime,
+        }
+    }
+
+    #[test]
+    fn a_recorded_decision_is_shown_with_writers_own_wording() {
+        let labelled = label_grants(
+            vec![("workspace.write".into(), true)],
+            Some(&[described("workspace.write", "Change your notes")]),
+        );
+
+        assert_eq!(labelled[0].label, "Change your notes");
+        assert!(labelled[0].allowed);
+    }
+
+    /// The case that matters: an extension updated to drop a capability it once
+    /// asked for leaves the old decision behind. Dropping it from the list
+    /// would hide a grant the user could no longer revoke.
+    #[test]
+    fn a_decision_the_manifest_no_longer_describes_is_still_listed() {
+        let labelled = label_grants(vec![("network".into(), true)], Some(&[]));
+
+        assert_eq!(labelled.len(), 1);
+        assert_eq!(labelled[0].key, "network");
+        assert_eq!(labelled[0].label, "network");
+    }
+
+    /// An uninstalled extension has no manifest to read, and its decisions
+    /// should already be gone - but if any survive, they must still be visible.
+    #[test]
+    fn decisions_survive_a_missing_manifest() {
+        let labelled = label_grants(vec![("workspace.write".into(), false)], None);
+
+        assert_eq!(labelled[0].label, "workspace.write");
+        assert!(!labelled[0].allowed);
+    }
 }
