@@ -446,3 +446,98 @@ body.tree-dragging [data-tree-path] {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* Extension install consent. The unsafe tier is styled apart from the rest on
+   purpose: every other capability is scope-checked by the permission gate,
+   while this one starts a program Writer cannot restrict. Presenting them
+   identically would imply a symmetry that does not exist. */
+.extension-consent {
+  position: relative;
+  width: min(460px, 90vw);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.extension-consent__header h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.extension-consent__author,
+.extension-consent__detail {
+  color: var(--text-muted);
+}
+
+.extension-consent__section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.extension-consent__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.extension-consent__list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.extension-consent__label {
+  font-weight: 500;
+}
+
+.extension-consent__reason {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.extension-consent__section--unsafe {
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #d9534f 55%, transparent);
+  background: color-mix(in srgb, #d9534f 8%, transparent);
+}
+
+.extension-consent__warning {
+  margin-top: 8px;
+  font-weight: 500;
+}
+
+.extension-consent__ack {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.extension-consent__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.extension-consent__actions button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+}
+
+.extension-consent__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.extension-consent__actions .is-unsafe:not(:disabled) {
+  border-color: #d9534f;
+  color: #d9534f;
+}

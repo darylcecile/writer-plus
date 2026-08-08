@@ -35,7 +35,14 @@ export interface PreferenceManifest {
 export interface Capabilities {
   workspace?: { read?: string[]; write?: string[]; delete?: string[]; reason: string };
   network?: { domains?: string[]; reason: string };
-  ai?: { reason: string };
+  /**
+   * Escape hatch. Grants raw child-process control, which Writer cannot
+   * sandbox: a spawned process runs as the user with full access to the
+   * machine. There is no scoping and no allowlist, because a permitted
+   * interpreter runs arbitrary code anyway. The `reason` is shown verbatim
+   * in a distinct, deliberately alarming consent dialog.
+   */
+  unsafe?: { reason: string };
   embeddings?: { write?: boolean; reason: string };
   clipboard?: { read?: boolean; write?: boolean; reason: string };
   storage?: { shared?: string[]; reason?: string };
@@ -64,7 +71,7 @@ const ID_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z-.]+)?$/;
 
 /** Capabilities whose `reason` is shown verbatim at consent time. */
-const REASON_REQUIRED = ["workspace", "network", "ai", "embeddings", "clipboard"] as const;
+const REASON_REQUIRED = ["workspace", "network", "unsafe", "embeddings", "clipboard"] as const;
 
 export function validateManifest(
   input: unknown,
@@ -127,7 +134,7 @@ export function describeCapabilities(caps: Capabilities | undefined): {
   label: string;
   detail: string;
   reason: string;
-  tier: "install" | "runtime";
+  tier: "install" | "runtime" | "unsafe";
 }[] {
   if (!caps) return [];
   const out: ReturnType<typeof describeCapabilities> = [];
@@ -177,13 +184,14 @@ export function describeCapabilities(caps: Capabilities | undefined): {
     }
   }
 
-  if (caps.ai) {
+  if (caps.unsafe) {
     out.push({
-      key: "ai",
-      label: "Send text to GitHub Copilot",
-      detail: "Content you pass to the model leaves this machine",
-      reason: caps.ai.reason,
-      tier: "install",
+      key: "unsafe",
+      label: "Run programs outside the sandbox",
+      detail:
+        "This extension can start other programs on your computer. They run with your full account access and Writer cannot restrict what they do.",
+      reason: caps.unsafe.reason,
+      tier: "unsafe",
     });
   }
 

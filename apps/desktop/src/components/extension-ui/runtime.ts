@@ -107,6 +107,12 @@ export async function createRuntime(
       if (level === "error") console.error(`[ext ${instanceId}]`, message);
     },
     onToast: (_instanceId, style, title, message) => events.onToast(style, title, message),
+    onDispose: (_instanceId, extensionId) => {
+      // Fire-and-forget: the VM is going away either way, and a failed reap
+      // must not block that. Rust owns the kill because a guest that crashed
+      // or blew its CPU budget never gets to run its own teardown.
+      void invoke("extension_reap", { extensionId }).catch(() => {});
+    },
   });
 
   for (const ext of installed) {

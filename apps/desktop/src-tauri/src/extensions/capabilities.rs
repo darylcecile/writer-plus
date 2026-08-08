@@ -44,13 +44,10 @@ pub fn dispatch(
             embeddings_reindex(manifest, workspace_root, args, webview, app)
         }
         ("embeddings", "clear") => embeddings_clear(app),
-        ("ai", "ask")
-        | ("ai", "startStream")
-        | ("ai", "pollStream")
-        | ("ai", "cancel")
-        | ("ai", "models") => Err(AppError::Unavailable(format!(
-            "ai.{method} not implemented"
-        ))),
+        ("process", _) => {
+            let table = app.state::<super::process::ProcessTable>();
+            super::process::dispatch(&table, extension_id, method, args)
+        }
         ("storage", "get") => storage_get(app, extension_id, args, storage_shared(manifest)),
         ("storage", "set") => storage_set(app, extension_id, args, storage_shared(manifest)),
         ("storage", "remove") => storage_remove(app, extension_id, args, storage_shared(manifest)),

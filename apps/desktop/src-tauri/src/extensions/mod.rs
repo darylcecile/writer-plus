@@ -1,7 +1,9 @@
 pub mod capabilities;
 pub mod manifest;
 pub mod permissions;
+pub mod process;
 pub mod registry;
+pub mod which;
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -79,4 +81,18 @@ pub fn extension_install_manifest(
 
 pub fn init(app: &tauri::AppHandle) {
     app.manage(ExtensionRegistry::default());
+    app.manage(process::ProcessTable::default());
+}
+
+/// Release any OS resources an extension instance still holds.
+///
+/// Called when a panel is disposed. This is host-enforced rather than left to
+/// the guest because an extension that crashed, ran out of memory, or blew its
+/// CPU budget never runs its own teardown - and an `unsafe`-tier extension may
+/// be holding a live child process. Without this, closing a panel leaks a
+/// process every time.
+#[tauri::command]
+pub fn extension_reap(extension_id: String, app: tauri::AppHandle) {
+    use tauri::Manager as _;
+    app.state::<process::ProcessTable>().reap(&extension_id);
 }

@@ -593,6 +593,7 @@ pub fn run() {
             extensions::extension_capability,
             extensions::extension_list,
             extensions::extension_install_manifest,
+            extensions::extension_reap,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

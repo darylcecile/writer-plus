@@ -74,10 +74,6 @@ pub enum CapabilityGrant {
         #[serde(default)]
         write: bool,
     },
-    Ai {
-        #[serde(default)]
-        chat: bool,
-    },
     Storage {
         #[serde(default)]
         shared: bool,
@@ -92,6 +88,29 @@ pub enum CapabilityGrant {
         #[serde(default)]
         write: bool,
     },
+    /// Escape hatch: run with the app's own privileges.
+    ///
+    /// This is the one grant that leaves the permission sandbox. It exists
+    /// because some integrations genuinely cannot be expressed as a gated
+    /// capability - driving an external agent process over stdio, for example -
+    /// and the honest answer is to say so rather than to dress an unsandboxed
+    /// feature up as a narrow permission.
+    ///
+    /// Everything a sandboxed extension does is mediated: paths are contained,
+    /// hosts are allowlisted, capabilities are checked per call. An `unsafe`
+    /// extension gets none of that. It can spawn processes and talk to anything
+    /// on the machine, exactly like the app itself.
+    ///
+    /// `reason` is mandatory and is shown verbatim in the consent dialog, so an
+    /// extension cannot request this silently or without explanation.
+    Unsafe { reason: String },
+}
+
+impl CapabilityGrant {
+    /// Whether this grant leaves the permission sandbox.
+    pub fn is_unsafe(&self) -> bool {
+        matches!(self, CapabilityGrant::Unsafe { .. })
+    }
 }
 
 impl ExtensionManifest {
@@ -118,8 +137,18 @@ impl ExtensionManifest {
                         return Err(invalid("network host '*' is not allowed"));
                     }
                 }
+                CapabilityGrant::Unsafe { reason } => {
+                    // The consent dialog shows this verbatim, so a blank or
+                    // token reason would let an extension request the strongest
+                    // grant in the system without telling the user anything.
+                    if reason.trim().len() < 12 {
+                        return Err(invalid(
+                            "unsafe capability requires a reason explaining why the extension \
+                             needs to run outside the sandbox",
+                        ));
+                    }
+                }
                 CapabilityGrant::Embeddings { .. }
-                | CapabilityGrant::Ai { .. }
                 | CapabilityGrant::Storage { .. }
                 | CapabilityGrant::Clipboard { .. } => {}
             }

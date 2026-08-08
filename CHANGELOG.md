@@ -2,6 +2,8 @@
 
 ## 2026-08-07
 
+- AI Chat now works with whichever AI agent you already have installed — GitHub Copilot, Claude Code, Codex, or Gemini — chosen in the extension's preferences. Writer itself has no built-in AI: the extension talks to your agent over the Agent Client Protocol, so the app is not tied to a single vendor and a new agent needs no change to Writer. Because starting another program is something a sandbox cannot contain, extensions that do it must declare a new "unsafe" permission, which is presented in its own section of the install dialog with a separate acknowledgement rather than sitting in the list alongside ordinary permissions. The agent reaches your notes only through the permissions you granted the extension, and any attempt it makes to modify files is declined.
+
 - Extensions system foundations. Extensions are written in TypeScript and React, run inside a QuickJS sandbox with no ambient host access, and render through host-owned UI primitives so every extension inherits the app's theme. Anything that touches the machine goes through a capability broker and is re-validated in Rust against the extension's manifest, including workspace path containment that refuses symlinks escaping the workspace. Extensions can expose services to each other: the bundled semantic-index extension indexes notes with sqlite-vec and exposes search to the AI Chat extension, which is otherwise unable to read the index. Chat answers carry citations the host resolves with the user's own authority, so an extension needs no file-read grant to make a source clickable.
 
 ## 2026-07-20

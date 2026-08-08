@@ -30,7 +30,7 @@ impl PermissionGate {
         match capability {
             "workspace" => self.check_workspace(manifest, workspace_root, method, args),
             "embeddings" => self.check_embeddings(manifest, method),
-            "ai" => self.check_ai(manifest, method),
+            "process" => self.check_process(manifest, method),
             "storage" => self.check_storage(manifest, method),
             "clipboard" => self.check_clipboard(manifest, method),
             "preferences" => self.check_preferences(method, args),
@@ -131,21 +131,31 @@ impl PermissionGate {
         }
     }
 
-    fn check_ai(&self, manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
+    /// Gate for the generic process primitives.
+    ///
+    /// These are only reachable with an `unsafe` grant. There is deliberately no
+    /// finer-grained variant - no allowlist of programs, no argument filtering -
+    /// because any such gate would be security theatre: a process that can spawn
+    /// one program can generally be talked into spawning another, and pretending
+    /// otherwise would encourage extensions to request it casually.
+    fn check_process(&self, manifest: &ExtensionManifest, method: &str) -> Result<(), AppError> {
         match method {
-            "ask" | "startStream" | "pollStream" | "cancel" | "models" => {
+            "spawn" | "write" | "read" | "kill" | "which" => {
                 if manifest
                     .permissions
                     .capabilities
                     .iter()
-                    .any(|grant| matches!(grant, CapabilityGrant::Ai { chat: true }))
+                    .any(CapabilityGrant::is_unsafe)
                 {
                     Ok(())
                 } else {
-                    deny(format!("ai.{method} was not granted"))
+                    deny(format!(
+                        "process.{method} requires the 'unsafe' capability, which this extension \
+                         did not declare"
+                    ))
                 }
             }
-            _ => deny(format!("unknown ai method {method:?}")),
+            _ => deny(format!("unknown process method {method:?}")),
         }
     }
 
@@ -591,6 +601,67 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("unknown workspace method"));
+    }
+
+    #[test]
+    fn process_requires_the_unsafe_grant() {
+        // The whole `unsafe` tier rests on this. Every method is checked
+        // individually because a gap in one is a gap in all of them: `which`
+        // leaks what is installed, and `spawn` is arbitrary execution.
+        let gate = PermissionGate;
+        for method in ["spawn", "write", "read", "kill", "which"] {
+            let err = gate
+                .check(&manifest(Vec::new()), None, "process", method, &[])
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("requires the 'unsafe' capability"),
+                "process.{method} was not gated: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_is_allowed_once_unsafe_is_declared() {
+        let gate = PermissionGate;
+        let granted = manifest(vec![CapabilityGrant::Unsafe {
+            reason: "Runs the AI assistant you choose as a separate program.".into(),
+        }]);
+        for method in ["spawn", "write", "read", "kill", "which"] {
+            gate.check(&granted, None, "process", method, &[])
+                .unwrap_or_else(|err| panic!("process.{method} should be allowed: {err}"));
+        }
+    }
+
+    #[test]
+    fn other_grants_do_not_imply_process_access() {
+        // A broad workspace grant is the most likely near-miss: it is the most
+        // commonly requested capability, and an extension holding it must not
+        // get process spawning thrown in.
+        let gate = PermissionGate;
+        let err = gate
+            .check(
+                &workspace_manifest(vec!["**"], vec!["**"]),
+                None,
+                "process",
+                "spawn",
+                &[],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("requires the 'unsafe' capability"));
+    }
+
+    #[test]
+    fn unknown_process_methods_are_denied_even_when_unsafe() {
+        // `unsafe` is a trust decision about spawning processes, not a blanket
+        // pass on anything routed through the `process` capability.
+        let gate = PermissionGate;
+        let granted = manifest(vec![CapabilityGrant::Unsafe {
+            reason: "Runs the AI assistant you choose as a separate program.".into(),
+        }]);
+        let err = gate
+            .check(&granted, None, "process", "exec", &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown process method"));
     }
 
     #[test]

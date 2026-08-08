@@ -2,7 +2,9 @@
 
 ## Summary
 
-A TypeScript extension system for Writer, modelled on Raycast's authoring experience but with real isolation. Extensions are authored in TypeScript/React, distributed from GitHub repositories, and execute inside a per-extension JavaScript VM that has **no ambient host access**. Every capability that touches the user's machine — reading notes, writing files, network, AI — is a host-provided function gated by a declared manifest permission and an explicit user grant enforced in Rust.
+A TypeScript extension system for Writer, modelled on Raycast's authoring experience but with real isolation. Extensions are authored in TypeScript/React, distributed from GitHub repositories, and execute inside a per-extension JavaScript VM that has **no ambient host access**. Every capability that touches the user's machine — reading notes, writing files, network — is a host-provided function gated by a declared manifest permission and an explicit user grant enforced in Rust.
+
+> **Revised during implementation.** AI is no longer a host capability. See [AI Chat](#ai-chat-first-core-extension) for what replaced it and why.
 
 The design goal, stated plainly: **an installed extension must not be able to do anything harmful without the user having approved that specific class of action.**
 
@@ -81,7 +83,7 @@ flowchart TB
 
     subgraph rust["Rust backend"]
         Gate["Permission gate<br/>(grant table, scopes)"]
-        FS["fs / search / ai / net"]
+        FS["fs / search / net / process"]
     end
 
     VM1 -- "serialized UI tree (JSON)" --> UI
@@ -104,44 +106,55 @@ flowchart TB
 
 ### Manifest (`writer.json`)
 
+> The example below is the **shipped** `extensions/ai-chat/manifest.json`, kept in sync
+> with the real file rather than idealised.
+
 ```json
 {
-  "id": "ai-chat",
+  "id": "writer.ai-chat",
   "name": "AI Chat",
-  "description": "Reason over your notes with GitHub Copilot.",
-  "version": "1.0.0",
-  "minWriterVersion": "0.5.0",
-  "author": "darylcecile",
-  "license": "MIT",
-  "icon": "icon.png",
+  "version": "0.1.0",
+  "description": "Ask questions about your notes using an AI agent you already have installed. Answers are grounded in your own writing, with sources you can open.",
+  "author": "writer",
+  "icon": "message",
   "commands": [
     {
-      "name": "ask",
-      "title": "Ask Your Notes",
-      "description": "Ask a question answered from your workspace.",
-      "mode": "view",
-      "surface": "panel"
+      "name": "chat",
+      "title": "Chat With Your Notes",
+      "subtitle": "Ask questions grounded in what you've written",
+      "mode": "view"
     }
   ],
+  "permissions": {
+    "capabilities": [
+      {
+        "name": "unsafe",
+        "reason": "Starts the AI assistant you choose (GitHub Copilot, Claude Code, Codex, or Gemini) as a separate program on your computer. That program runs with your full account access and Writer cannot restrict what it does."
+      },
+      { "name": "workspace", "read": ["**/*.md"] },
+      { "name": "storage", "shared": false }
+    ],
+    "usesServices": ["search"],
+    "providesServices": []
+  },
   "preferences": [
     {
-      "name": "model",
+      "name": "harness",
+      "title": "AI assistant",
       "type": "dropdown",
-      "title": "Model",
-      "default": "claude-sonnet-4.5",
-      "data": [{ "title": "Claude Sonnet 4.5", "value": "claude-sonnet-4.5" }]
-    }
-  ],
-  "capabilities": {
-    "workspace": {
-      "read": ["**/*.md"],
-      "write": [],
-      "reason": "Reads your notes to answer questions about them."
+      "default": "copilot",
+      "options": ["copilot", "claude", "codex", "gemini"],
+      "description": "Which locally installed agent to use. It must already be installed and signed in."
     },
-    "ai": { "reason": "Sends selected note excerpts to GitHub Copilot." },
-    "network": { "domains": [] },
-    "storage": { "shared": [] }
-  }
+    {
+      "name": "contextNotes",
+      "title": "Notes to retrieve per question",
+      "type": "dropdown",
+      "default": "6",
+      "options": ["3", "6", "10"],
+      "description": "More context gives better answers but costs more tokens."
+    }
+  ]
 }
 ```
 
@@ -154,11 +167,20 @@ Design decisions, and why:
 
 ### Capability tiers
 
-| Tier         | Capabilities                                                                              | Consent                                                  |
-| ------------ | ----------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Ambient      | own storage, own preferences, UI render, log                                              | none — cannot touch user data                            |
-| Install-time | `workspace.read` (glob-scoped), `network.domains` (explicit list), `ai`, `clipboard.read` | granted once at install, shown with reasons              |
-| Runtime      | `workspace.write`, `workspace.delete`, `network.domains: ["*"]`, `shell`                  | prompted on first use, with "allow once / always / deny" |
+| Tier         | Capabilities                                                                                      | Consent                                                              |
+| ------------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Ambient      | own storage, own preferences, UI render, log                                                      | none — cannot touch user data                                        |
+| Install-time | `workspace.read` (glob-scoped), `network.domains` (explicit list), `embeddings`, `clipboard.read` | granted once at install, shown with reasons                          |
+| Runtime      | `workspace.write`, `workspace.delete`, `network.domains: ["*"]`                                   | prompted on first use, with "allow once / always / deny"             |
+| **Unsafe**   | `unsafe` → `process.spawn` and friends                                                            | separate dialog, styled apart, with its own acknowledgement checkbox |
+
+**The `unsafe` tier is a trust decision, not a scope check.** Everything above it is
+scope-checked: a `workspace.read` grant physically cannot reach outside its globs, because
+Rust refuses. `unsafe` has no equivalent — it starts a program that runs as the user, which
+Writer cannot inspect, restrict, or revoke once running. There is deliberately **no program
+allowlist**: a permitted interpreter runs arbitrary code and a permitted shell runs anything,
+so a partial gate would imply a guarantee that does not exist. It is all-or-nothing behind
+explicit consent, with the extension's stated reason shown verbatim.
 
 **Scopes are enforced in Rust against the canonicalized real path**, after symlink resolution, and must remain inside the workspace root. A `read: ["**/*.md"]` grant cannot escape via `../` or a symlink into `~/.ssh`.
 
@@ -178,13 +200,13 @@ it was not granted. And a provider failure is delivered to the consumer as a nor
 (`{ ok: false, code }`), never as an exception, so one extension can never take another down.
 
 **Embeddings are a Rust capability, not a library.** sqlite-vec is a native SQLite extension
-and embedding inference is native code; neither can run in QuickJS. It is layered exactly
-like `ai`: the guest sees an async capability, Rust owns the implementation.
+and embedding inference is native code; neither can run in QuickJS. The guest sees an async
+capability; Rust owns the implementation.
 
 ### Guest API surface
 
 ```typescript
-import { List, ActionPanel, Action, showToast, workspace, storage, ai } from "@writer/api";
+import { List, ActionPanel, Action, showToast, workspace, storage } from "@writer/api";
 
 export default function Command() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -264,23 +286,86 @@ Updates are checked on launch and on demand, never applied silently when permiss
 
 ## AI Chat (first core extension)
 
-**Critical finding that shapes the implementation:** the TypeScript `@github/copilot-sdk` (v1.0.8) depends on `koffi` (native FFI), `vscode-jsonrpc`, and `@github/copilot` — it spawns and drives the Copilot CLI over JSON-RPC. **It cannot run in a webview, and certainly not inside the sandbox.** The Rust crate `github-copilot-sdk` (v1.0.8) is the correct integration point: it manages the CLI process lifecycle, speaks JSON-RPC 2.0 over stdio, bundles the CLI at build time, and resolves via `CliProgram::Path` → `COPILOT_CLI_PATH` → bundled. It requires Rust 1.94+.
+**This section was rewritten during implementation. The original design was wrong twice over**,
+and both corrections came from running code rather than reading docs.
 
-So the AI capability is implemented in Rust and exposed to extensions as a capability — which is the right layering anyway, since it means the AI tool calls pass through the same permission gate as everything else.
+### What the original spec said, and why it was abandoned
 
-**Custom tools registered with the SDK**, each backed by an existing Rust command and each scope-checked:
+The spec proposed an `ai` capability implemented in Rust with `github-copilot-sdk`, on the
+reasoning that the TypeScript `@github/copilot-sdk` depends on `koffi` (native FFI) and
+cannot run in a webview. That premise is still true. The conclusion was not.
 
-| Tool           | Backing                                      | Gate                               |
-| -------------- | -------------------------------------------- | ---------------------------------- |
-| `search_notes` | `commands::search::fuzzy_search`             | `workspace.read` scope             |
-| `read_note`    | `commands::fs::read_file`                    | `workspace.read` scope             |
-| `list_recent`  | `commands::recents::get_recent_files_global` | `workspace.read`                   |
-| `find_by_name` | `commands::search::find_file_by_name`        | `workspace.read`                   |
-| `write_note`   | `commands::fs::write_file`                   | `workspace.write` + runtime prompt |
+Two problems killed it:
 
-Target use cases: "what did I write about X before?" and "answer this from my notes." Both are `search_notes` → `read_note` → synthesize, with citations rendered as clickable note links.
+1. **It hard-wires one vendor into the host.** Every extension wanting a different assistant
+   would need a change to Writer itself. AI tooling changes on a far shorter cycle than a
+   desktop app ships.
+2. **It puts a network-talking, process-spawning integration inside the trusted host**, where
+   it is exempt from the permission model the rest of the system is built on. The component
+   most likely to need scrutiny would have been the one component nobody could gate.
 
-**Privacy:** note content leaves the machine only for tools the user granted. The consent dialog says so in plain language. A per-workspace "never send this folder" denylist is respected by the gate.
+### What replaced it
+
+**The host provides no AI capability at all.** It provides generic child-process primitives —
+`process.which`, `spawn`, `write`, `read`, `kill` — behind the `unsafe` tier. An extension
+that wants an assistant brings its own integration and declares `unsafe`, which forces a
+distinct consent dialog.
+
+AI Chat speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), and the
+**entire ACP client is TypeScript running inside the sandbox** (`extensions/ai-chat/src/acp/`).
+Nothing about it is privileged; it is ordinary extension code that happens to have been
+granted the ability to start a program.
+
+**The one protocol fact that makes this possible:** ACP frames messages as
+newline-delimited JSON, not LSP-style `Content-Length` headers. A QuickJS guest can parse
+that with `split("\n")`. Verified against `agent-client-protocol` 2.0.0 crate source and
+confirmed against a live agent.
+
+**Harnesses are user-choosable**, because the protocol is the contract rather than the vendor:
+
+| Harness        | Invocation                                            |
+| -------------- | ----------------------------------------------------- |
+| GitHub Copilot | `copilot --acp`                                       |
+| Gemini CLI     | `gemini --experimental-acp`                           |
+| Claude Code    | `npx -y @agentclientprotocol/claude-agent-acp@0.66.0` |
+| Codex          | `npx -y @agentclientprotocol/codex-acp@1.1.14`        |
+
+Versions are pinned deliberately. `@latest` is a network fetch at every launch, which hands
+the publisher the ability to change what executes between one run and the next.
+
+The preset list lives **in the extension, not in Rust**. A copy in the host would be a second
+source of truth that drifts, and adding a harness must touch exactly one file.
+
+### How the agent reaches notes
+
+The agent asks; it does not read. ACP's `fs/read_text_file` request is routed through the
+extension's own `workspace.read` capability, so the manifest's globs apply and Rust enforces
+them. `session/request_permission` for write operations is declined.
+
+**This is protocol convention, not containment, and the spec must not pretend otherwise.**
+A hostile harness would read the file directly and never send the request. What actually
+holds is the `unsafe` consent: the user chose to run this specific program. Verified
+end-to-end — a live agent asked to write a file attempted `apply_patch`, requested
+permission, was declined, and the file was never created.
+
+### Model selection
+
+Dropped. `session/new` returns `models.availableModels`, but ACP v1's `NewSessionRequest`
+has no field to select one, so there is no portable way to act on it. Shipping a dropdown
+that silently does nothing is worse than shipping no dropdown. The agent's own default applies.
+
+### Process lifetime is host-enforced
+
+The extension kills its agent on unmount, but that path cannot be relied on: a VM that
+crashed, ran out of memory, or exhausted its CPU budget never runs cleanup — and that is
+precisely the state a hostile extension would arrange on purpose. So the host reaps every
+process owned by an instance when the instance is disposed, whether or not the guest
+cooperated. This was a real leak found by testing disposal, not by reading the code.
+
+**Privacy:** note content reaches the agent only through capabilities the user granted, and
+only for the harness the user chose and consented to. Because the harness is a local program
+the user already installed, Writer makes no claim about what it does with that content
+beyond starting it — and the consent dialog says exactly that.
 
 ## Security Model — What This Does and Does Not Protect Against
 
@@ -300,7 +385,8 @@ Stating this explicitly, because a security model that isn't honest about its ed
 
 - A user who grants broad permissions without reading them. Consent UI quality is a security control; treat it as one.
 - Malicious content _inside_ granted scope — an extension with `workspace.read: ["**/*.md"]` and `network` genuinely can exfiltrate notes. The manifest makes that combination visible; it does not make it impossible.
-- Prompt injection via note content reaching the AI tool loop. Mitigation: tool results are clearly delimited, and write tools always require confirmation.
+- Prompt injection via note content reaching an AI agent. Mitigation: retrieved note text is clearly delimited in the prompt, and every agent-initiated write is declined. Neither is a solution; injection into an LLM has no known complete defence.
+- **Anything an `unsafe` extension does once consent is given.** The program it starts runs as the user, outside the sandbox, and Writer can neither inspect nor restrict it. The `unsafe` tier is a disclosure mechanism, not a containment one, and the consent dialog is written to say so rather than to reassure.
 - A malicious _host_ app update, or a compromised Rust dependency. Out of scope.
 - Timing/side-channel attacks. QuickJS-in-WASM is same-process; it is not OS-level isolation and we should not claim it is.
 - CPU/memory exhaustion beyond the configured budgets on a machine already under pressure.
@@ -308,6 +394,17 @@ Stating this explicitly, because a security model that isn't honest about its ed
 ## Implementation Phases
 
 Each phase is independently shippable and leaves the app in a working state.
+
+| Phase                           | Status                                                                                                                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                  |
+| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                  |
+| 3 — Permissions and preferences | **Partly built.** The Rust gate, manifest model, and consent-dialog component all exist and are tested; **nothing renders the dialog yet** because there is no install flow to trigger it |
+| 4 — Distribution                | **Not started**                                                                                                                                                                           |
+| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                  |
+| 6 — Polish                      | **Not started**                                                                                                                                                                           |
+
+Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog stays unreachable until installation exists.
 
 **Phase 1 — Sandbox foundation.** Extension host worker; QuickJS runtime lifecycle with memory/interrupt budgets, scope-based handle management, module loader (default-deny, only `@writer/api`). Capability broker skeleton with exactly one capability (`workspace.read`) end to end, gated in Rust. Local folder loading only, no distribution. Contract test asserting committed trees are JSON-serializable.
 
@@ -317,7 +414,7 @@ Each phase is independently shippable and leaves the app in a working state.
 
 **Phase 4 — Distribution.** GitHub install by `owner/repo`; official registry file; release-based update checks; permission-diff re-consent; private repo support with keychain-stored PAT; enable/disable/uninstall management UI.
 
-**Phase 5 — AI Chat.** `github-copilot-sdk` in Rust; `ai` capability; custom tools wired to existing commands and scope-checked; `Chat` primitive with streaming; citations as note links.
+**Phase 5 — AI Chat.** ACP client in TypeScript inside the sandbox; `process.*` primitives in Rust behind the `unsafe` tier; harness presets owned by the extension; streaming UI; grounding via the semantic-index service.
 
 **Phase 6 — Polish.** Opt-in shared storage (both sides declare, user consents); `writer-ext` CLI + docs + example extension; dev-mode hot reload.
 
@@ -339,10 +436,8 @@ Desktop frontend:
 
 Rust backend:
 
-- `apps/desktop/src-tauri/src/extensions/{mod,registry,installer,permissions,capabilities,github}.rs`
-- `apps/desktop/src-tauri/src/copilot/{mod,tools}.rs`
+- `apps/desktop/src-tauri/src/extensions/{mod,registry,installer,permissions,capabilities,github,process,which}.rs`
 - `apps/desktop/src-tauri/src/lib.rs` — command registration
-- `apps/desktop/src-tauri/Cargo.toml` — `github-copilot-sdk`, `keyring`
 
 Shared / docs:
 
@@ -368,5 +463,5 @@ Shared / docs:
 1. **Extension-contributed editor decorations.** Genuinely useful (custom code-block renderers) but would mean handing extensions a CodeMirror surface, which is hard to sandbox. Deferred past v1; revisit with a narrow "block renderer returns a serialized tree" design.
 2. **Bundling React per extension.** 430KB of React in every bundle is wasteful when the host already has it. Options: externalize React and inject a host-provided copy into the VM (saves size, couples versions), or accept the duplication (simpler, isolated). Measure first — 46ms load was acceptable in the spike.
 3. **Signing official extensions.** TOFU + permission diffs are proposed for v1. Sigstore/minisign for registry extensions is a natural follow-up.
-4. **Windows/Linux.** The design is platform-neutral, but the Copilot CLI bundling and keychain storage need per-platform verification.
+4. **Windows/Linux.** The design is platform-neutral, but `which.rs` resolves programs by running the user's login shell to recover its `PATH`, which is POSIX-specific and needs a Windows equivalent.
 5. **Worker + WASM in WKWebView.** quickjs-emscripten is confirmed working in browsers and Node; it was **not** verified inside Tauri's WKWebView specifically. Phase 1 must start with that smoke test, since an asm.js fallback variant exists if WASM is unavailable.

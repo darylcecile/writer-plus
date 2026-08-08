@@ -175,14 +175,11 @@ export interface IndexStatus {
   lastBuilt: number | null;
 }
 
-export interface AiMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
-export interface AiTool {
-  name: string;
-  description: string;
-  /** JSON Schema for the tool's parameters. */
-  parameters: Record<string, unknown>;
+export interface ProcessOutput {
+  /** Lines written to stdout since the previous read. */
+  stdout: string[];
+  /** Lines written to stderr since the previous read. */
+  stderr: string[];
+  /** Null while the child is still running. */
+  exitCode: number | null;
 }

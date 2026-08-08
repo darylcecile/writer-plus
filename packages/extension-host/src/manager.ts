@@ -28,6 +28,18 @@ export interface InstanceEvents {
   onLog(instanceId: string, level: string, message: string): void;
   onToast(instanceId: string, style: string, title: string, message?: string): void;
   onError(instanceId: string, message: string, fatal: boolean): void;
+  /**
+   * The instance is going away and any OS-level resources it holds must be
+   * released.
+   *
+   * This exists because guest cleanup is best-effort: an extension that
+   * crashed, ran out of memory, or exhausted its CPU budget never gets to run
+   * a `useEffect` teardown, and an `unsafe`-tier extension may be holding a
+   * live child process. Relying on the guest to tidy up would mean a leaked
+   * process per panel open, which is exactly the sort of thing a hostile
+   * extension would arrange on purpose.
+   */
+  onDispose?(instanceId: string, extensionId: string): void;
 }
 
 interface Instance {
@@ -164,6 +176,13 @@ export class ExtensionManager {
     if (!instance) return;
     instance.disposed = true;
     this.instances.delete(instanceId);
+    try {
+      this.events.onDispose?.(instanceId, instance.extensionId);
+    } catch (err) {
+      // Reaping is a courtesy to the OS, not a precondition for freeing the
+      // VM. Failing here must not leave the WASM handles alive.
+      this.events.onError(instanceId, `dispose hook failed: ${describe(err)}`, false);
+    }
     try {
       instance.vm.dispose();
     } catch (err) {

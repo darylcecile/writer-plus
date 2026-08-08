@@ -3,18 +3,19 @@
  * will refuse; nothing here is authority in itself. A rejection surfaces as
  * `CapabilityError` with code `denied`.
  *
- * Note what is deliberately absent: no raw path access, no process, no shell,
- * no arbitrary SQL. The surface is narrow on purpose — every method here is
- * something the gate knows how to scope-check.
+ * Note what is deliberately absent from the *sandboxed* surface: no raw path
+ * access, no shell, no arbitrary SQL. Every method is something the gate knows
+ * how to scope-check. The one exception is `process`, which is gated on the
+ * `unsafe` capability and is a trust decision rather than a scope check — see
+ * its doc comment.
  */
 
 import { bridge } from "./runtime/bridge";
 import type {
-  AiMessage,
-  AiTool,
   IndexStatus,
   NoteContent,
   NoteRef,
+  ProcessOutput,
   SearchHit,
   SemanticHit,
 } from "./types";
@@ -76,46 +77,47 @@ export const preferences = {
   },
 };
 
-/** GitHub Copilot. Implemented in Rust because the SDK drives the Copilot CLI
- *  over JSON-RPC and cannot run in a webview, let alone in the sandbox. */
-export const ai = {
-  /** Non-streaming completion. */
-  ask(messages: AiMessage[], options?: { model?: string; tools?: AiTool[] }): Promise<string> {
-    return bridge.invoke("ai", "ask", [
-      messages as unknown as JsonValue,
+/**
+ * Raw child-process control. **Only available to extensions that declare the
+ * `unsafe` capability.** A spawned process runs as the user with no sandbox:
+ * Writer cannot contain it, so this is not a fine-grained gate but a trust
+ * decision the user makes once, per extension, with the extension's stated
+ * reason shown verbatim.
+ *
+ * There is deliberately no program allowlist. A permitted interpreter runs
+ * arbitrary code and a permitted shell runs anything, so a partial gate would
+ * imply a guarantee that does not exist.
+ */
+export const process = {
+  /** Resolve a program name on the user's login-shell PATH. Returns the
+   *  absolute path, or null when it is not installed. */
+  which(program: string): Promise<string | null> {
+    return bridge.invoke("process", "which", [program]);
+  },
+  /** Start a child process. The handle is namespaced to this extension. */
+  spawn(program: string, args: string[] = [], options?: { cwd?: string }): Promise<string> {
+    return bridge.invoke("process", "spawn", [
+      program,
+      args as unknown as JsonValue,
       (options ?? {}) as JsonValue,
     ]);
+  },
+  /** Write to the child's stdin. Bytes are sent verbatim; add your own
+   *  newline if the protocol is line-delimited. */
+  write(handle: string, data: string): Promise<void> {
+    return bridge.invoke("process", "write", [handle, data]);
   },
   /**
-   * Streaming completion. `onChunk` fires per delta. The returned promise
-   * resolves with the full text once the stream ends.
+   * Drain whatever the child has emitted since the last read. Non-blocking:
+   * an idle child yields empty arrays, so callers poll. `exitCode` is null
+   * while the process is still running.
    */
-  async stream(
-    messages: AiMessage[],
-    onChunk: (delta: string) => void,
-    options?: { model?: string; tools?: AiTool[] },
-  ): Promise<string> {
-    const streamId = await bridge.invoke<string>("ai", "startStream", [
-      messages as unknown as JsonValue,
-      (options ?? {}) as JsonValue,
-    ]);
-    let full = "";
-    for (;;) {
-      const next = await bridge.invoke<{ delta: string; done: boolean }>("ai", "pollStream", [
-        streamId,
-      ]);
-      if (next.delta) {
-        full += next.delta;
-        onChunk(next.delta);
-      }
-      if (next.done) return full;
-    }
+  read(handle: string): Promise<ProcessOutput> {
+    return bridge.invoke("process", "read", [handle]);
   },
-  cancel(streamId: string): Promise<void> {
-    return bridge.invoke("ai", "cancel", [streamId]);
-  },
-  models(): Promise<{ id: string; name: string }[]> {
-    return bridge.invoke("ai", "models", []);
+  /** Terminate the child and release the handle. */
+  kill(handle: string): Promise<void> {
+    return bridge.invoke("process", "kill", [handle]);
   },
 };
 
