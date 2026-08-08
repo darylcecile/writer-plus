@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod permissions;
 pub mod process;
 pub mod registry;
+pub mod updates;
 pub mod which;
 
 use crate::error::AppError;
@@ -239,6 +240,66 @@ fn installed_from_repo(app: &tauri::AppHandle, repo_slug: &str) -> Option<String
         }
     }
     None
+}
+
+/// Check every GitHub-installed extension for a newer release.
+///
+/// Reports rather than installs: an update still goes through the normal
+/// consent flow, so an extension cannot widen its permissions by publishing a
+/// release.
+///
+/// Failures are per-extension. One unreachable repo (deleted, renamed, or a
+/// revoked token) must not read as "nothing has updates", so its error is
+/// returned alongside the successes instead of aborting the whole check.
+#[tauri::command]
+pub async fn extension_check_updates(app: tauri::AppHandle) -> Result<UpdateReport, AppError> {
+    let token = credentials::load()?;
+    let dir = extensions_dir(&app)?;
+
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // Staging leftovers are not installed extensions.
+        if name.starts_with('.') {
+            continue;
+        }
+        if let Some(record) = updates::install_record(&entry.path()) {
+            sources.push((name, record));
+        }
+    }
+
+    let mut available = Vec::new();
+    let mut errors = Vec::new();
+    for (id, record) in sources {
+        match updates::check_one(&record, &id, token.clone()).await {
+            Ok(Some(update)) => available.push(update),
+            Ok(None) => {}
+            Err(err) => errors.push(UpdateCheckError {
+                id,
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    Ok(UpdateReport { available, errors })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReport {
+    pub available: Vec<updates::AvailableUpdate>,
+    /// Extensions that could not be checked, so the UI can say so rather than
+    /// implying they are up to date.
+    pub errors: Vec<UpdateCheckError>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckError {
+    pub id: String,
+    pub message: String,
 }
 
 /// Release any OS resources an extension instance still holds.

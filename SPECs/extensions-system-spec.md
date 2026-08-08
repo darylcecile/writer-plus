@@ -283,7 +283,23 @@ Bundle output is exactly two required files: `manifest.json` and `extension.js`.
 
 Deliberately Obsidian's model — **no CDN, no Writer-operated servers** — because it keeps user-hosted and official extensions on one code path.
 
-**Official registry:** `registry/extensions.json` in this repo, listing `{ id, name, author, description, repo }`. It is a lookup table only; the authoritative version always lives in the extension's own repo.
+**Official registry:** `registry/extensions.json` in this repo, listing `{ id, name, author, description, repo }`. It is a lookup table only; the authoritative version always lives in the extension's own repo. Fetched from `raw.githubusercontent.com` rather than the API so an anonymous read does not spend the user's unauthenticated rate limit on a file that is public by definition.
+
+Being listed grants nothing. The manifest, the version, and the bytes all come from the linked
+repository's own releases, so an entry cannot change what an extension may do and cannot shorten
+the consent flow. Installing from the registry, typing `owner/repo`, and applying an update are
+one code path with one consent dialog - a second, more trusted path is where trust bugs live.
+
+**Update checks are on demand, and report rather than install.** A check compares the installed
+version against the newest release of the repo recorded in `install.json` at install time.
+Applying an update still goes through `resolve`/`commit`, so an extension cannot widen its
+permissions by publishing a release. Per-extension failures are surfaced individually: a revoked
+token or a renamed repository must never be presented as "up to date", because that leaves a
+user stranded on a stale version while being told they are current.
+
+Version comparison is numeric per component, not lexical - a string compare makes `0.10.0` look
+older than `0.9.0`, which would silently pin a user forever. Prereleases sort before the release
+they qualify, so a `-beta` tag is never offered as an upgrade.
 
 **Third-party install:** the user enters `owner/repo` directly. Same install path, different entry point.
 
@@ -416,14 +432,14 @@ Stating this explicitly, because a security model that isn't honest about its ed
 
 Each phase is independently shippable and leaves the app in a working state.
 
-| Phase                           | Status                                                                                                                                                                                                                        |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                                                      |
-| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                                                      |
-| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding                               |
-| 4 — Distribution                | **Mostly built.** Install and update by `owner/repo` from GitHub releases, permission-diff re-consent, keychain-stored PAT for private repos, uninstall. The official registry file and scheduled update checks are not built |
-| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                                                      |
-| 6 — Polish                      | **Not started**                                                                                                                                                                                                               |
+| Phase                           | Status                                                                                                                                                                                          |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                        |
+| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                        |
+| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding |
+| 4 — Distribution                | **Built.** Install and update by `owner/repo` from GitHub releases, official registry, on-demand update checks, permission-diff re-consent, keychain-stored PAT for private repos, uninstall    |
+| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                        |
+| 6 — Polish                      | **Not started**                                                                                                                                                                                 |
 
 Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog
 stayed unreachable until installation existed. Both are now wired to Preferences → Extensions.

@@ -95,3 +95,85 @@ export function needsConsent(candidate: InstallCandidate): boolean {
   if (candidate.replacesVersion == null) return true;
   return candidate.addedCapabilities.length > 0;
 }
+
+/** One installed extension with a newer release available. */
+export interface AvailableUpdate {
+  id: string;
+  repo: string;
+  installedVersion: string;
+  latestVersion: string;
+}
+
+/** An extension that could not be checked, and why. */
+export interface UpdateCheckError {
+  id: string;
+  message: string;
+}
+
+export interface UpdateReport {
+  available: AvailableUpdate[];
+  /**
+   * Reported separately from `available` so the UI can say an extension could
+   * not be checked. Folding a failure into "no updates" makes a revoked token
+   * look exactly like being up to date.
+   */
+  errors: UpdateCheckError[];
+}
+
+/**
+ * Ask GitHub whether any installed extension has a newer release.
+ *
+ * Reports only. Installing an update still goes through {@link resolveInstall}
+ * and {@link commitInstall}, so the permission diff is shown as it would be for
+ * any other install.
+ */
+export function checkForUpdates(): Promise<UpdateReport> {
+  return invoke<UpdateReport>("extension_check_updates");
+}
+
+/** An entry in the official registry. */
+export interface RegistryEntry {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+  /** `owner/repo` - everything authoritative is fetched from here. */
+  repo: string;
+}
+
+/**
+ * Fetch the official extension list.
+ *
+ * A lookup table only: installing from here uses the identical code path and
+ * the identical consent dialog as typing `owner/repo` by hand.
+ */
+export function listOfficialExtensions(): Promise<RegistryEntry[]> {
+  return invoke<RegistryEntry[]>("extension_registry_list");
+}
+
+/** What an update check should be reported as. */
+export type UpdateSummary =
+  | { kind: "not-checked" }
+  | { kind: "up-to-date" }
+  | { kind: "updates"; count: number }
+  | { kind: "partial"; count: number; failed: number };
+
+/**
+ * Decide what to tell the user after an update check.
+ *
+ * Extracted from the component because the interesting case is easy to get
+ * wrong by accident: if any extension could *not* be checked, the answer is
+ * never "everything is up to date". A revoked token, a renamed repo, or an
+ * offline machine would otherwise be indistinguishable from being current,
+ * and the user would sit on a stale version believing they were not.
+ */
+export function summarizeUpdates(report: UpdateReport | null): UpdateSummary {
+  if (!report) return { kind: "not-checked" };
+
+  const count = report.available.length;
+  const failed = report.errors.length;
+
+  if (failed > 0) return { kind: "partial", count, failed };
+  if (count > 0) return { kind: "updates", count };
+  return { kind: "up-to-date" };
+}

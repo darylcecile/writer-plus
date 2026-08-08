@@ -118,9 +118,17 @@ type State =
 
 interface InstallExtensionProps {
   onInstalled?: (extensionId: string) => void;
+  /**
+   * A repository to load, set from outside (the official list, or an available
+   * update). Routed through this component rather than given its own install
+   * path so every install - typed, official, or an update - goes through one
+   * state machine and one consent dialog. A second path is where a consent bug
+   * would hide.
+   */
+  requestedRepo?: { repo: string; nonce: number } | null;
 }
 
-export function InstallExtension({ onInstalled }: InstallExtensionProps) {
+export function InstallExtension({ onInstalled, requestedRepo }: InstallExtensionProps) {
   const [repo, setRepo] = useState("");
   const [state, setState] = useState<State>({ phase: "idle" });
 
@@ -138,23 +146,40 @@ export function InstallExtension({ onInstalled }: InstallExtensionProps) {
     [onInstalled],
   );
 
-  const resolve = useCallback(async () => {
-    if (!repo.trim()) return;
-    setState({ phase: "resolving" });
-    try {
-      const candidate = await resolveInstall(repo.trim());
-      if (needsConsent(candidate)) {
-        setState({ phase: "reviewing", candidate });
-      } else {
-        // A same-permissions update. Interrupting for it would teach users to
-        // dismiss consent dialogs without reading them, which is the failure
-        // mode the dialog exists to avoid.
-        await install(candidate);
+  const resolveRepo = useCallback(
+    async (target: string) => {
+      if (!target.trim()) return;
+      setState({ phase: "resolving" });
+      try {
+        const candidate = await resolveInstall(target.trim());
+        if (needsConsent(candidate)) {
+          setState({ phase: "reviewing", candidate });
+        } else {
+          // A same-permissions update. Interrupting for it would teach users to
+          // dismiss consent dialogs without reading them, which is the failure
+          // mode the dialog exists to avoid.
+          await install(candidate);
+        }
+      } catch (error) {
+        setState({ phase: "failed", message: messageOf(error) });
       }
-    } catch (error) {
-      setState({ phase: "failed", message: messageOf(error) });
-    }
-  }, [repo, install]);
+    },
+    [install],
+  );
+
+  const resolve = useCallback(() => resolveRepo(repo), [repo, resolveRepo]);
+
+  // An outside request (official list, or an available update) fills the field
+  // and loads it, so the user sees which repository they are about to install
+  // from rather than a dialog appearing out of nowhere.
+  useEffect(() => {
+    if (!requestedRepo) return;
+    setRepo(requestedRepo.repo);
+    void resolveRepo(requestedRepo.repo);
+    // `nonce` is what makes re-requesting the same repo work; `resolveRepo` is
+    // stable and including it would re-fire on unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedRepo?.nonce]);
 
   const cancel = useCallback((candidate: InstallCandidate) => {
     // Fire-and-forget: the staged bytes are only in memory, so failing to
