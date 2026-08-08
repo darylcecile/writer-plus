@@ -1,6 +1,6 @@
 use crate::error::AppError;
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Once;
 
@@ -30,9 +30,9 @@ fn init_sqlite_vec() {
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
-/// Number of float dimensions for stored vectors.  Must match the `Embedder`
-/// in use.  The vec0 virtual table bakes this into the schema at creation
-/// time; changing it requires dropping and recreating the table.
+/// Fallback width, used when the store is opened without an explicit one.
+/// Matches [`super::embedder::HashEmbedder`], which is what the index falls
+/// back to when no real model is present.
 pub const VECTOR_DIMS: usize = 384;
 
 /// Schema for the semantic index database.
@@ -43,10 +43,12 @@ pub const VECTOR_DIMS: usize = 384;
 /// `vec_chunks`  — sqlite-vec vec0 virtual table.  This is a brute-force
 ///                 linear scan; fine up to ~100 K rows for a local notes app.
 ///
-/// Vector type: `float[384] distance_metric=cosine`.
-/// `note_path TEXT`  is a *metadata* column (filterable in WHERE).
-/// `+chunk_text TEXT` is an *auxiliary* column (returned in SELECT, not filterable).
-const SCHEMA: &str = "
+/// The vector width is interpolated because vec0 bakes it into the table at
+/// creation time. `note_path TEXT` is a *metadata* column (filterable in
+/// WHERE); `+chunk_text TEXT` is *auxiliary* (returned, not filterable).
+fn schema(dims: usize) -> String {
+    format!(
+        "
 PRAGMA journal_mode=WAL;
 
 CREATE TABLE IF NOT EXISTS note_meta (
@@ -62,11 +64,13 @@ CREATE TABLE IF NOT EXISTS chunk_seq (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
     chunk_id   INTEGER PRIMARY KEY,
-    embedding  float[384] distance_metric=cosine,
+    embedding  float[{dims}] distance_metric=cosine,
     note_path  TEXT,
     +chunk_text TEXT
 );
-";
+"
+    )
+}
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -93,21 +97,72 @@ pub struct SearchHit {
 /// to avoid poisoning on panics.
 pub struct VectorStore {
     conn: Mutex<Connection>,
+    dims: usize,
 }
 
 impl VectorStore {
-    /// Open (or create) the semantic index database at `db_path`.
-    /// Applies the schema and enables WAL mode.
-    pub fn open(db_path: &Path) -> Result<Self, AppError> {
+    /// Open (or create) the index for vectors of `dims` floats.
+    ///
+    /// vec0 bakes the width into the table at creation time, so an index built
+    /// for one embedder cannot hold another's vectors. When the width changes -
+    /// which happens the first time a real model replaces the placeholder - the
+    /// tables are dropped and rebuilt rather than left to fail at insert time,
+    /// far from the cause.
+    ///
+    /// Discarding is safe because this database is a derived cache: every row
+    /// can be recomputed from the notes, which are the actual source of truth.
+    pub fn open_with_dims(db_path: &Path, dims: usize) -> Result<Self, AppError> {
         // Must run before any sqlite3_open call.
         init_sqlite_vec();
 
         let conn = Connection::open(db_path)?;
-        conn.execute_batch(SCHEMA)?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+
+        let existing: Option<usize> = conn
+            .query_row("SELECT value FROM index_meta WHERE key = 'dims'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|v| v.parse().ok());
+
+        // A pre-existing database with no recorded width predates this field;
+        // it was built at the old fixed size.
+        let effective = existing.unwrap_or_else(|| {
+            let legacy = table_exists(&conn, "vec_chunks").unwrap_or(false);
+            if legacy {
+                VECTOR_DIMS
+            } else {
+                dims
+            }
+        });
+
+        if effective != dims {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS vec_chunks;
+                 DROP TABLE IF EXISTS note_meta;
+                 DROP TABLE IF EXISTS chunk_seq;",
+            )?;
+        }
+
+        conn.execute_batch(&schema(dims))?;
+        conn.execute(
+            "INSERT INTO index_meta (key, value) VALUES ('dims', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [dims.to_string()],
+        )?;
 
         Ok(Self {
             conn: Mutex::new(conn),
+            dims,
         })
+    }
+
+    /// The vector width this store was opened for.
+    pub fn dimensions(&self) -> usize {
+        self.dims
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────
@@ -124,7 +179,7 @@ impl VectorStore {
         Ok(IndexStatus {
             note_count: note_count as usize,
             chunk_count: chunk_count as usize,
-            dimensions: VECTOR_DIMS,
+            dimensions: self.dimensions(),
         })
     }
 
@@ -173,8 +228,9 @@ impl VectorStore {
         for e in embeddings {
             debug_assert_eq!(
                 e.len(),
-                VECTOR_DIMS,
-                "embedding dimension mismatch: expected {VECTOR_DIMS}, got {}",
+                self.dims,
+                "embedding dimension mismatch: expected {}, got {}",
+                self.dims,
                 e.len()
             );
         }
@@ -238,11 +294,17 @@ impl VectorStore {
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<SearchHit>, AppError> {
-        debug_assert_eq!(
-            query_embedding.len(),
-            VECTOR_DIMS,
-            "query dimension mismatch"
-        );
+        // A real check rather than a `debug_assert`: in release the assertion
+        // would vanish and sqlite-vec would compare against the wrong width,
+        // returning plausible-looking but meaningless results. Wrong answers
+        // are worse than an error.
+        if query_embedding.len() != self.dims {
+            return Err(AppError::Invalid(format!(
+                "query vector is {} floats but this index holds {}",
+                query_embedding.len(),
+                self.dims
+            )));
+        }
         let blob = floats_to_blob(query_embedding);
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -291,7 +353,7 @@ mod tests {
 
     fn open_test_store() -> (VectorStore, TempDir) {
         let dir = TempDir::new().unwrap();
-        let store = VectorStore::open(&dir.path().join("test.db")).unwrap();
+        let store = VectorStore::open_with_dims(&dir.path().join("test.db"), VECTOR_DIMS).unwrap();
         (store, dir)
     }
 
@@ -431,5 +493,115 @@ mod tests {
     #[test]
     fn content_hash_different_inputs_differ() {
         assert_ne!(content_hash(b"hello"), content_hash(b"world"));
+    }
+}
+
+/// Whether a table exists, used to recognise a database written before the
+/// width was recorded.
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, AppError> {
+    let found: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+#[cfg(test)]
+mod dimension_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// In release builds a `debug_assert` disappears, so a wrong-width query
+    /// would have reached sqlite-vec and produced meaningless-but-plausible
+    /// results. Silent wrong answers are worse than a visible error.
+    #[test]
+    fn a_wrong_width_query_is_refused_rather_than_answered() {
+        let dir = TempDir::new().unwrap();
+        let store = VectorStore::open_with_dims(&dir.path().join("i.db"), 8).unwrap();
+
+        let err = store
+            .knn_search(&[0.5f32; 16], 3)
+            .expect_err("a 16-float query must not be run against an 8-float index");
+        assert!(matches!(err, AppError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn the_recorded_width_is_the_one_the_store_was_opened_for() {
+        let dir = TempDir::new().unwrap();
+        let store = VectorStore::open_with_dims(&dir.path().join("i.db"), 256).unwrap();
+        assert_eq!(store.dimensions(), 256);
+        assert_eq!(store.status().unwrap().dimensions, 256);
+    }
+
+    #[test]
+    fn reopening_at_the_same_width_keeps_the_data() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("i.db");
+
+        let store = VectorStore::open_with_dims(&path, 8).unwrap();
+        store
+            .upsert_note("a.md", 1, 42, &["hello".into()], &[vec![0.5f32; 8]])
+            .unwrap();
+        drop(store);
+
+        let store = VectorStore::open_with_dims(&path, 8).unwrap();
+        assert_eq!(store.status().unwrap().note_count, 1, "data must survive");
+    }
+
+    /// The first real model swap changes the width from 384 to 256. vec0 bakes
+    /// the width into the table, so without this the app would come up and then
+    /// fail on the first insert - long after the cause.
+    #[test]
+    fn changing_width_rebuilds_rather_than_failing_later() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("i.db");
+
+        let store = VectorStore::open_with_dims(&path, 8).unwrap();
+        store
+            .upsert_note("a.md", 1, 42, &["hello".into()], &[vec![0.5f32; 8]])
+            .unwrap();
+        drop(store);
+
+        let store = VectorStore::open_with_dims(&path, 16).unwrap();
+        assert_eq!(store.dimensions(), 16);
+        assert_eq!(
+            store.status().unwrap().note_count,
+            0,
+            "a width change must clear the index, which is a derived cache"
+        );
+
+        // And the rebuilt table must actually accept the new width.
+        store
+            .upsert_note("b.md", 1, 43, &["hi".into()], &[vec![0.25f32; 16]])
+            .unwrap();
+        assert_eq!(store.status().unwrap().note_count, 1);
+    }
+
+    /// A database written before the width was recorded must be treated as the
+    /// old fixed size, not as whatever is being asked for now.
+    #[test]
+    fn a_legacy_database_without_recorded_width_is_rebuilt_when_the_width_moves() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("i.db");
+
+        let store = VectorStore::open_with_dims(&path, VECTOR_DIMS).unwrap();
+        assert_eq!(store.dimensions(), VECTOR_DIMS);
+        drop(store);
+
+        // Simulate the pre-`index_meta` layout.
+        {
+            init_sqlite_vec();
+            let conn = Connection::open(&path).unwrap();
+            conn.execute("DELETE FROM index_meta", []).unwrap();
+        }
+
+        let store = VectorStore::open_with_dims(&path, 256).unwrap();
+        assert_eq!(store.dimensions(), 256);
+        store
+            .upsert_note("a.md", 1, 42, &["x".into()], &[vec![0.1f32; 256]])
+            .unwrap();
     }
 }

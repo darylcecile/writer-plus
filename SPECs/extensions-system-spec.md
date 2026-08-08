@@ -203,6 +203,23 @@ it was not granted. And a provider failure is delivered to the consumer as a nor
 and embedding inference is native code; neither can run in QuickJS. The guest sees an async
 capability; Rust owns the implementation.
 
+**The embedding model is downloaded, not bundled.** Writer uses
+[potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) (MIT, 256-wide) via
+[`model2vec-rs`](https://crates.io/crates/model2vec-rs) - static embeddings that need no ONNX
+runtime and therefore no dynamic library, which keeps macOS notarization simple. Weights are
+~31 MB, fetched on explicit user action from Preferences rather than on first launch, because a
+local-first editor should not silently reach out to the network the first time someone opens a
+notes folder.
+
+Until the model is present the index falls back to a bag-of-words hash embedder. This has _no_
+semantic ability, so the fallback is reported in Preferences rather than hidden - a silent
+downgrade would read to a user as the feature being poor rather than switched off. Note the two
+embedders have different widths (384 vs 256), so the vec0 table records its width and rebuilds
+when it changes; the index is a derived cache and every row is recomputable from the notes.
+
+Model2Vec must be built with the `fancy-regex` feature. The default `onig` feature links a C
+regex library, which would reintroduce exactly the native-dependency problem this choice avoids.
+
 ### Guest API surface
 
 ```typescript

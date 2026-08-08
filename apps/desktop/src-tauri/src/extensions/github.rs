@@ -232,25 +232,74 @@ impl GitHubClient {
             })?;
 
         let response = check_status(response, repo).await?;
-
-        let mut body = Vec::with_capacity(asset.size as usize);
-        let mut stream = response;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| AppError::Unavailable(format!("download of {} failed: {e}", asset.name)))?
-        {
-            if body.len() as u64 + chunk.len() as u64 > max_bytes {
-                return Err(AppError::Invalid(format!(
-                    "{} exceeded the {max_bytes} byte limit mid-download",
-                    asset.name
-                )));
-            }
-            body.extend_from_slice(&chunk);
-        }
-
-        Ok(body)
+        read_capped(response, &asset.name, max_bytes).await
     }
+}
+
+/// Build a plain HTTP client with the same TLS setup as the GitHub client.
+///
+/// Exists so non-GitHub downloads (currently the embedding model) cannot skip
+/// `install_crypto_provider`, whose absence makes reqwest *panic* rather than
+/// return an error.
+pub fn http_client() -> Result<reqwest::Client, AppError> {
+    install_crypto_provider();
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| AppError::Unavailable(format!("could not create HTTP client: {e}")))
+}
+
+/// GET a URL, refusing to buffer more than `max_bytes`.
+///
+/// Shares the streaming cap with release-asset downloads rather than
+/// reimplementing it, so there is one place where "how much will we hold in
+/// memory for a remote file" is decided.
+pub async fn download_capped(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, AppError> {
+    let label = url.rsplit('/').next().unwrap_or(url).to_string();
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| AppError::Unavailable(format!("could not download {label}: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(AppError::Unavailable(format!(
+            "download of {label} failed: HTTP {}",
+            response.status()
+        )));
+    }
+
+    read_capped(response, &label, max_bytes).await
+}
+
+/// Stream a response body, refusing to grow past `max_bytes`.
+///
+/// The cap is applied per chunk rather than to a declared `Content-Length`,
+/// because that header is supplied by the remote and a post-hoc check would
+/// only run once the bytes were already resident.
+async fn read_capped(
+    mut response: reqwest::Response,
+    label: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, AppError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| AppError::Unavailable(format!("download of {label} failed: {e}")))?
+    {
+        if body.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err(AppError::Invalid(format!(
+                "{label} exceeded the {max_bytes} byte limit mid-download"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Turn an HTTP status into an error a user can act on.
