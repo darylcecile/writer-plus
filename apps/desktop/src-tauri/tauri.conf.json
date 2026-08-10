@@ -4,9 +4,9 @@
   "version": "0.4.0",
   "identifier": "com.writer-computer",
   "build": {
-    "beforeDevCommand": "vp dev",
+    "beforeDevCommand": "vp run core:bundle && vp dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "vp build",
+    "beforeBuildCommand": "vp run core:bundle && vp build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -41,6 +41,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": ["core-extensions/*/manifest.json", "core-extensions/*/extension.js"],
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "./Entitlements.plist",

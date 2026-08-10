@@ -287,6 +287,7 @@ two defects: the list silently fell behind the component types, and names are no
 across components - `target` is a subtree on `Action.Push` but a destination URL on
 `Detail.Metadata.Link`, so hoisting by name would have deleted every metadata link's
 destination.
+
 - `Grid`
 - `ActionPanel`, `Action`, `Action.Submenu`, and built-ins (`OpenNote`, `CopyToClipboard`, `OpenInBrowser`, `SubmitForm`, `Push`, `Pop`)
 - Writer-specific: `Chat` (message list + composer + streaming), `NotePreview`
@@ -358,6 +359,46 @@ The asset endpoint is used rather than `browser_download_url` because the latter
 
 Updates are checked on demand, and daily if the user opts in. They are never applied
 silently, whether or not permissions changed.
+
+### Core extensions ship with the app
+
+The two first-party extensions (`writer.semantic-index`, `writer.ai-chat`) are not installed
+from GitHub — they are part of the product. They travel a separate, simpler path from third-party
+extensions, on purpose: a built-in is versioned by the app that carries it, so tying it to a
+GitHub release would mean the app could "update" a piece of itself out from under its own code.
+
+**Bundled at build time.** A build step (`apps/desktop/scripts/bundle-core-extensions.ts`) scans
+`/extensions/*` — the single source of truth for what is first-party — bundles each one with the
+same bundler used everywhere else, and writes `manifest.json` + `extension.js` into
+`src-tauri/core-extensions/<id>/`. That directory is a generated artifact (gitignored) and is
+declared as a Tauri resource, so the bundles are carried inside the shipped app and are available
+to Rust at runtime via `resource_dir()`. The step runs before both `dev` and `build`, so a
+checkout that has never bundled still produces them on first run. Bundling is a runtime resource
+rather than an `include_bytes!` so the Rust crate still compiles, tests, and lints with the
+bundles absent — a missing resource is simply skipped, not a build break.
+
+**Seeded on first launch.** At startup, before the registry loads from disk, the host copies each
+shipped bundle into the user's extensions folder if it is missing or if the shipped version is
+strictly newer than what is installed. So a fresh profile has the built-ins present the first
+time Preferences → Extensions is opened, an app upgrade that carries a newer built-in replaces
+the old one in place, and an unchanged launch writes nothing. Version comparison reuses the exact
+`is_newer` the updater uses, so a built-in and a downloaded extension can never disagree about
+which of two versions is newer.
+
+**No `install.json` for a built-in.** Seeding deliberately reuses the same atomic write-and-swap
+as a consented GitHub install (one on-disk contract, staged then renamed, rolled back on failure)
+but omits the install record. A record names a source repository and release, and a built-in has
+neither; writing a fake one would make the updater try to check a repository that does not exist.
+The absence is load-bearing, not an oversight: the updater already treats a missing record as
+"not from a release, nothing to check", so a built-in is invisible to update checks by
+construction.
+
+**Accepted limitation: uninstalling a built-in is not permanent.** Because seeding is
+missing-or-older, removing a core extension brings it back on the next launch. This is correct
+for v1 — `ai-chat` depends on `semantic-index`'s search service, and the app treats both as part
+of itself — but it does mean the uninstall button is, for the two built-ins, a "reset to shipped"
+rather than a permanent removal. Remembering a per-extension uninstall is a larger feature than
+this one and is deferred.
 
 ## AI Chat (first core extension)
 
@@ -470,14 +511,14 @@ Stating this explicitly, because a security model that isn't honest about its ed
 
 Each phase is independently shippable and leaves the app in a working state.
 
-| Phase                           | Status                                                                                                                                                                                                        |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                                      |
-| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                                      |
-| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding               |
-| 4 — Distribution                | **Built.** Install and update by `owner/repo` from GitHub releases, official registry, on-demand and opt-in daily update checks, permission-diff re-consent, keychain-stored PAT for private repos, uninstall |
-| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                                      |
-| 6 — Polish                      | **Not started**                                                                                                                                                                                               |
+| Phase                           | Status                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 — Sandbox foundation          | **Built**, test-verified                                                                                                                                                                                                                                                                                                                                     |
+| 2 — UI model                    | **Built**, test-verified                                                                                                                                                                                                                                                                                                                                     |
+| 3 — Permissions and preferences | **Built**, test-verified, and now reachable: installing from Preferences → Extensions shows the consent dialog. Grant _persistence_ and runtime allow-once/always prompts are still outstanding                                                                                                                                                              |
+| 4 — Distribution                | **Built.** Install and update by `owner/repo` from GitHub releases, official registry, on-demand and opt-in daily update checks, permission-diff re-consent, keychain-stored PAT for private repos, uninstall. Core extensions are bundled at build time and seeded on first launch (missing-or-newer), so a fresh install ships with both built-ins present |
+| 5 — AI Chat                     | **Built**, verified against a live agent                                                                                                                                                                                                                                                                                                                     |
+| 6 — Polish                      | **Not started**                                                                                                                                                                                                                                                                                                                                              |
 
 Phases 3 and 4 are coupled in practice: consent is an install-time event, so the dialog
 stayed unreachable until installation existed. Both are now wired to Preferences → Extensions.

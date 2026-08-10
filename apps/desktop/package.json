@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "vp exec tsc && vp build",
+    "core:bundle": "node scripts/bundle-core-extensions.ts",
     "preview": "vp preview",
     "tauri": "tauri"
   },

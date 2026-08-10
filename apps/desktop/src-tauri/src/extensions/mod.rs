@@ -7,6 +7,7 @@ pub mod manifest;
 pub mod permissions;
 pub mod process;
 pub mod registry;
+pub mod seed;
 pub mod updates;
 pub mod which;
 
@@ -150,6 +151,22 @@ pub fn extension_resolve_note(
 
 pub fn init(app: &tauri::AppHandle) {
     let registry = ExtensionRegistry::default();
+
+    // Copy the core extensions the app ships into the user's extensions
+    // directory before loading, so a fresh profile has the built-ins present on
+    // first launch instead of an empty registry. Missing resources (a dev build
+    // that skipped bundling) or a single corrupt bundle are tolerated - seeding
+    // reports failures but never blocks startup.
+    if let Ok(dir) = extensions_dir(app) {
+        match app.path().resource_dir() {
+            Ok(resources) => {
+                for (id, err) in seed::seed(&resources.join("core-extensions"), &dir) {
+                    eprintln!("[extensions] could not seed core extension {id}: {err}");
+                }
+            }
+            Err(e) => eprintln!("[extensions] could not locate bundled extensions: {e}"),
+        }
+    }
 
     // Load what is already on disk. Without this an install survives on disk
     // but not in the registry, so it disappears from the app on restart.
