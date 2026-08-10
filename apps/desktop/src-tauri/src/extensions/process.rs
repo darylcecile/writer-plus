@@ -56,9 +56,9 @@ impl ProcessTable {
         // Resolve through the same login-shell-aware lookup the rest of the app
         // uses. A GUI-launched app inherits launchd's minimal PATH, so bare
         // program names would otherwise fail in a packaged build while working
-        // in development.
-        let resolved = super::which::resolve_program(program)
-            .ok_or_else(|| AppError::NotFound(format!("{program:?} was not found on PATH")))?;
+        // in development. An absolute path is accepted too, so a guest can feed
+        // `process.which`'s own answer straight back in.
+        let resolved = super::which::resolve_executable(program)?;
 
         let mut child = Command::new(&resolved)
             .args(args)
@@ -278,6 +278,34 @@ mod tests {
         assert!(matches!(err, AppError::Denied(_)));
     }
 
+    /// The regression this exists for: `which` answers with an absolute path,
+    /// `spawn` used to reject anything containing a separator, so an extension
+    /// that located a program before launching it - the obvious, careful way to
+    /// use the pair - got "was not found on PATH" naming a path that plainly
+    /// existed. Both halves passed their own tests; only the seam was broken,
+    /// so the test has to cross it.
+    #[test]
+    fn a_path_from_which_can_be_spawned() {
+        let table = table();
+        let resolved = dispatch(&table, "ext", "which", &[json!("sh")])
+            .unwrap()
+            .as_str()
+            .expect("which returns a path")
+            .to_string();
+        assert!(resolved.contains('/'), "which returns an absolute path");
+
+        let handle = dispatch(
+            &table,
+            "ext",
+            "spawn",
+            &[json!(resolved), json!(["-c", "exit 0"])],
+        )
+        .expect("spawning which's own answer must work")
+        .as_u64()
+        .unwrap();
+        dispatch(&table, "ext", "kill", &[json!(handle)]).unwrap();
+    }
+
     #[test]
     fn spawn_read_and_kill_round_trip() {
         let table = table();
@@ -428,5 +456,64 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    /// Drives a real installed agent through the exact sequence the AI Chat
+    /// extension performs - `which`, then `spawn` that answer, then an ACP
+    /// `initialize` over stdio - because the bug this replaces was invisible to
+    /// every test that stubbed either half.
+    ///
+    /// Ignored by default: it depends on a binary that is not present on CI.
+    ///
+    ///   cargo test extensions::process::tests::live_agent -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_agent_handshake_over_a_resolved_path() {
+        let table = table();
+        let Some(program) = ["copilot", "claude", "codex", "gemini"]
+            .iter()
+            .find_map(|name| dispatch(&table, "ext", "which", &[json!(name)]).ok())
+            .and_then(|v| v.as_str().map(str::to_string))
+        else {
+            eprintln!("no agent installed; nothing to check");
+            return;
+        };
+        eprintln!("resolved: {program}");
+
+        let handle = dispatch(&table, "ext", "spawn", &[json!(program), json!(["--acp"])])
+            .expect("spawning the resolved path must work")
+            .as_u64()
+            .unwrap();
+
+        let init = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": 1, "clientCapabilities": { "fs": {} } },
+        });
+        dispatch(
+            &table,
+            "ext",
+            "write",
+            &[json!(handle), json!(format!("{init}\n"))],
+        )
+        .expect("write to the agent");
+
+        let mut reply = String::new();
+        for _ in 0..200 {
+            let out = dispatch(&table, "ext", "read", &[json!(handle)]).unwrap();
+            for line in out["stdout"].as_array().unwrap() {
+                reply.push_str(line.as_str().unwrap_or_default());
+            }
+            if reply.contains("\"id\":1") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        dispatch(&table, "ext", "kill", &[json!(handle)]).ok();
+
+        eprintln!("agent replied: {reply}");
+        assert!(
+            reply.contains("\"id\":1"),
+            "agent did not answer initialize: {reply}"
+        );
     }
 }

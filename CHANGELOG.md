@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-11
+
+- AI Chat could not start your agent, even when it was installed. Asking a question returned `"/Users/you/.local/bin/copilot" was not found on PATH` - naming a file that was sitting right there. Two parts of the extension interface disagreed: the one that locates a program answered with a full path, and the one that starts a program refused to accept a path. An extension doing the careful thing, checking the agent exists before launching it, was the one case guaranteed to fail. Starting a program by full path now works, and a test drives a real installed agent through the whole sequence rather than pretending either half of it.
+
+- The chat panel is put together properly. The row above the conversation held nothing but a stray arrow, the Send button sat lower than the box it belonged to, and typing past the first line hid what you had already written instead of growing the box. The actions arrow now sits next to Send where it belongs and its menu opens upwards so it is not cut off by the bottom of the window, the composer grows with what you type up to a limit and then scrolls, and the conversation follows a reply as it arrives. Clicking into the box no longer draws a hard rectangle over the highlight it already draws for itself.
+
 ## 2026-08-10
 
 - The two built-in extensions now arrive with the app. Until now a fresh install started with an empty Extensions list: the AI chat panel and the semantic index that powers it existed in the source tree but were never actually present in a running build, so "Chat With Your Notes" was nowhere to be found on a machine that had not had them copied in by hand. They are now bundled into the app at build time and placed into your extensions folder on first launch, so they are there the first time you open Preferences → Extensions. They carry no update record and never phone GitHub for updates - a built-in is versioned by the app it ships inside, so it is refreshed only when a newer app carries a newer copy, and you are never silently downgraded. One caveat worth stating plainly: if you remove a built-in it will return on the next launch, because the chat extension depends on the index extension's search and the app treats both as part of itself for now.

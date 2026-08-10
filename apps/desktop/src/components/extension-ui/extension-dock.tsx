@@ -41,7 +41,14 @@ export function ExtensionDock() {
         </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* `overflow-hidden`, not `auto`: every top-level extension component
+          (List, Detail, Chat) is `h-full min-h-0 flex-col` with its own inner
+          scroller. An outer scroller here nested a second one around them, so a
+          long transcript scrolled the whole panel - composer included - off the
+          bottom instead of scrolling inside the message area.
+          `data-extension-ui` is the hook App.css uses to opt this subtree out of
+          the global focus outline; extension controls draw their own. */}
+      <div className="min-h-0 flex-1 overflow-hidden" data-extension-ui>
         <DockBody host={host} extensionId={extensionId} command={command} />
       </div>
 

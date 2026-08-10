@@ -18,7 +18,7 @@
  * blank panel is far harder to diagnose than an explicit "unknown component".
  */
 
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Accessory, Color, Icon } from "@writer/extension-api";
 import type { HostNode, JsonValue } from "@writer/extension-api/protocol";
 import { ExtensionIcon } from "./icons";
@@ -776,20 +776,37 @@ function runAction(node: HostNode, ctx: RenderContext): void {
  */
 function ActionPanelRenderer(node: HostNode, ctx: RenderContext): ReactNode {
   const [open, setOpen] = useState(false);
+  // The panel is rendered in two very different places: inline on a list row,
+  // where there is room below, and in the chat composer, which sits on the
+  // bottom edge. A fixed `mt-1` menu is clipped in the second case, so the
+  // direction is measured at open time rather than assumed.
+  const [dropUp, setDropUp] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const actions = useMemo(() => flattenActions(node), [node]);
 
-  const toggle = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    setOpen((v) => !v);
-  }, []);
+  const toggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!open) {
+        const rect = triggerRef.current?.getBoundingClientRect();
+        // ~32px per row plus padding, capped so a long list still decides
+        // sensibly rather than always flipping.
+        const needed = Math.min(actions.length * 32 + 8, 240);
+        setDropUp(rect ? window.innerHeight - rect.bottom < needed : false);
+      }
+      setOpen((v) => !v);
+    },
+    [open, actions.length],
+  );
 
   if (actions.length === 0) return null;
 
   return (
     <span className="relative">
       <button
+        ref={triggerRef}
         type="button"
-        className="rounded px-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+        className="flex h-6 w-6 items-center justify-center rounded text-[11px] leading-none text-[var(--text-muted)] hover:bg-[var(--item-hover-bg)] hover:text-[var(--text-primary)]"
         onClick={toggle}
         aria-label="Actions"
         aria-expanded={open}
@@ -802,7 +819,11 @@ function ActionPanelRenderer(node: HostNode, ctx: RenderContext): ReactNode {
         // whatever the extension rendered behind it. A plain background token
         // here was transparent, and the list rows read straight through the
         // open menu.
-        <span className="surface-card absolute right-0 z-10 mt-1 flex min-w-40 flex-col py-1 shadow-lg">
+        <span
+          className={`surface-card absolute right-0 z-10 flex min-w-40 flex-col py-1 shadow-lg ${
+            dropUp ? "bottom-full mb-1" : "mt-1"
+          }`}
+        >
           {actions.map(({ node: action, group }) => (
             <button
               key={action.id}
@@ -903,14 +924,38 @@ function ChatRenderer(node: HostNode, ctx: RenderContext): ReactNode {
     setDraft("");
   }, [draft, onSubmit, ctx]);
 
+  // A textarea's height is fixed by its `rows` attribute; it does not grow with
+  // its content, it scrolls. So `max-h-32` alone described an auto-growing
+  // composer that never actually grew - the input stayed one line tall and
+  // hid everything the user had typed above the caret. Measuring against
+  // `scrollHeight` is the only way to size it to its content; the CSS max-height
+  // still caps it, and overflow takes over past that point.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // `scrollHeight` excludes the border but Tailwind sizes everything
+    // `border-box`, so assigning it directly leaves the element 2px short of its
+    // own content and it scrolls one line early.
+    const cs = getComputedStyle(el);
+    const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    el.style.height = `${el.scrollHeight + border}px`;
+  }, [draft]);
+
+  // Keep the newest message in view as a turn streams in. Anchored to the
+  // transcript element rather than `scrollIntoView` on a child, which would
+  // also scroll the app's own layout if the panel were ever nested.
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length, busy]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {actions ? (
-        <div className="flex justify-end border-b border-[var(--line-subtle)] px-2 py-1">
-          <RenderNode node={actions} ctx={ctx} />
-        </div>
-      ) : null}
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+      <div ref={transcriptRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {hasMessages ? (
           renderAll(messages, ctx)
         ) : (
@@ -926,9 +971,21 @@ function ChatRenderer(node: HostNode, ctx: RenderContext): ReactNode {
           </div>
         )}
       </div>
-      <div className="flex items-end gap-2 border-t border-[var(--line-subtle)] p-2">
+      {/* Actions live in the composer row rather than in a bar of their own.
+          The ActionPanel trigger is a bare chevron - fine beside a list row it
+          belongs to, but as a strip above the transcript it read as an empty
+          toolbar with a stray glyph in it, which is exactly how it looked. */}
+      <div className="flex items-end gap-1.5 border-t border-[var(--line-subtle)] p-2">
         <textarea
-          className="max-h-32 min-h-9 flex-1 resize-none rounded-lg border border-[var(--line-subtle)] bg-[var(--surface-input)] px-2 py-1.5 text-[13px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-60"
+          ref={inputRef}
+          // One row by default. Without this a textarea is two rows tall, so the
+          // composer opened at 53px against a 36px `min-h-9` intent and nothing
+          // beside it could line up.
+          rows={1}
+          // `py-[7px]`, not `py-2`: 20px line + 14px padding + 2px border is
+          // exactly 36px, so a single-line input matches the `h-9` buttons
+          // beside it rather than sitting 2px taller than them.
+          className="max-h-32 min-h-9 flex-1 resize-none rounded-lg border border-[var(--line-subtle)] bg-[var(--surface-input)] px-2 py-[7px] text-[13px] leading-5 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-60"
           placeholder={str(node.props.placeholder, "Ask about your notes…")}
           value={draft}
           disabled={disabled}
@@ -940,12 +997,20 @@ function ChatRenderer(node: HostNode, ctx: RenderContext): ReactNode {
             }
           }}
         />
+        {actions ? (
+          <div className="flex h-9 shrink-0 items-center">
+            <RenderNode node={actions} ctx={ctx} />
+          </div>
+        ) : null}
         {/* Stop replaces Send while a turn is in flight rather than sitting
-            beside it: they are never both useful, and the composer is narrow. */}
+            beside it: they are never both useful, and the composer is narrow.
+            Both are `h-9` so they match the input's resting height exactly -
+            `items-end` then keeps them on the input's last line as it grows,
+            instead of floating against a taller box. */}
         {busy && node.handlers.onStop ? (
           <button
             type="button"
-            className="rounded-lg bg-[var(--surface-subtle)] px-3 py-1.5 text-[12px] text-[var(--text-primary)]"
+            className="h-9 shrink-0 rounded-lg border border-[var(--line-subtle)] px-3 text-[12px] text-[var(--text-primary)] hover:bg-[var(--item-hover-bg)]"
             onClick={handler(node, "onStop", ctx)}
           >
             Stop
@@ -953,7 +1018,10 @@ function ChatRenderer(node: HostNode, ctx: RenderContext): ReactNode {
         ) : (
           <button
             type="button"
-            className="rounded-lg bg-[var(--surface-subtle)] px-3 py-1.5 text-[12px] text-[var(--text-primary)] disabled:text-[var(--text-muted)]"
+            // Accent-on-transparent rather than a filled button: it is the
+            // affirmative action here, and this matches how the install and
+            // consent dialogs mark theirs.
+            className="h-9 shrink-0 rounded-lg border border-[var(--line-subtle)] px-3 text-[12px] text-[var(--text-muted)] enabled:border-[var(--accent)] enabled:text-[var(--accent)] enabled:hover:bg-[var(--item-hover-bg)]"
             onClick={send}
             disabled={busy || disabled || draft.trim().length === 0}
           >
