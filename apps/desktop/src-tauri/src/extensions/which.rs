@@ -13,6 +13,7 @@
 //! adding a harness is an extension update rather than a Writer release.
 //! A second copy here would only guarantee the two drift apart.
 
+use crate::error::AppError;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -35,6 +36,50 @@ pub fn resolve_program(program: &str) -> Option<PathBuf> {
         .iter()
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable_file(candidate))
+}
+
+/// Resolve a program named by `process.spawn`, which may be a bare program name
+/// *or* an absolute path.
+///
+/// This exists because [`resolve_program`] alone made two host APIs that are
+/// obviously meant to compose refuse to: `proc.which("copilot")` hands the guest
+/// back `/Users/…/.local/bin/copilot`, the natural next call is
+/// `proc.spawn(thatPath)`, and a bare-name-only lookup rejected it with
+/// "was not found on PATH" while naming the binary sitting at that exact path.
+/// The AI chat extension does precisely this, and it is the right way to write
+/// it: resolving first turns "not installed" into a better message than a raw
+/// spawn failure.
+///
+/// Accepting an absolute path grants nothing a bare name does not. `spawn` is
+/// already gated on the `unsafe` capability - the grant documented as running
+/// with the app's own privileges - and a bare name is resolved to an absolute
+/// path before exec anyway. The check that matters is the same one either way:
+/// the target must be an executable file.
+///
+/// Relative paths stay rejected. They resolve against a working directory the
+/// caller does not control, so they are ambiguous rather than merely permissive.
+pub fn resolve_executable(program: &str) -> Result<PathBuf, AppError> {
+    if program.is_empty() {
+        return Err(AppError::Invalid("no program was given".into()));
+    }
+
+    if program.contains('/') {
+        let path = Path::new(program);
+        if !path.is_absolute() {
+            return Err(AppError::Invalid(format!(
+                "{program:?} is a relative path; use a program name or an absolute path"
+            )));
+        }
+        if !is_executable_file(path) {
+            return Err(AppError::NotFound(format!(
+                "{program:?} is not an executable file"
+            )));
+        }
+        return Ok(path.to_path_buf());
+    }
+
+    resolve_program(program)
+        .ok_or_else(|| AppError::NotFound(format!("{program:?} was not found on PATH")))
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -204,6 +249,44 @@ mod tests {
     #[test]
     fn resolve_reports_missing_programs_as_none() {
         assert!(resolve_program("writer-definitely-not-a-real-program").is_none());
+    }
+
+    /// The regression this pair exists for: `process.which` hands the guest an
+    /// absolute path, so `process.spawn` must accept one. It did not, and the AI
+    /// chat extension - which resolves before spawning, deliberately - could
+    /// never start an agent that was installed and on PATH.
+    #[test]
+    fn spawn_resolution_accepts_what_which_returns() {
+        let found = resolve_program("sh").expect("sh should resolve");
+        let round_tripped = resolve_executable(found.to_str().expect("path is utf-8"))
+            .expect("path should resolve");
+        assert_eq!(round_tripped, found);
+    }
+
+    #[test]
+    fn spawn_resolution_accepts_a_bare_name() {
+        let resolved = resolve_executable("sh").expect("sh should resolve");
+        assert!(resolved.is_absolute());
+    }
+
+    #[test]
+    fn spawn_resolution_rejects_relative_paths_and_non_executables() {
+        // Relative paths resolve against a cwd the caller does not control.
+        assert!(resolve_executable("../../bin/sh").is_err());
+        assert!(resolve_executable("dir/prog").is_err());
+        assert!(resolve_executable("").is_err());
+        assert!(resolve_executable("/definitely/not/here").is_err());
+
+        // Permissions are asserted against a file this test creates rather than
+        // a system path: `/etc/hosts` is 0644 on a stock machine but was 0777 on
+        // the one this was written on, so a system file proves nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("notes.txt");
+        std::fs::write(&data, b"not a program").unwrap();
+        assert!(resolve_executable(data.to_str().unwrap()).is_err());
+
+        // A directory is not a program either, even though it carries +x.
+        assert!(resolve_executable(dir.path().to_str().unwrap()).is_err());
     }
 
     /// Not a test: a probe for checking PATH discovery under a minimal

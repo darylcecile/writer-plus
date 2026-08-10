@@ -251,8 +251,22 @@ function fakeAgent(options: { reply?: string; stopReason?: string } = {}) {
     switch (`${req.capability}.${req.method}`) {
       case "process.which":
         return "/usr/local/bin/copilot";
-      case "process.spawn":
+      case "process.spawn": {
+        // Mirror the host's real precondition. This fake used to accept any
+        // program string at all, which is how a shipped bug got past a green
+        // suite: Rust rejected anything containing a separator, so feeding it
+        // `which`'s own absolute answer failed with "not found on PATH" naming
+        // a path that existed. A fake that is more permissive than the host
+        // tests the fake, not the client.
+        const program = req.args[0];
+        if (typeof program !== "string" || program === "") {
+          throw new Error(`process.spawn expected a program name, got ${typeof program}`);
+        }
+        if (program.includes("/") && !program.startsWith("/")) {
+          throw new Error(`process.spawn rejects relative paths, got ${program}`);
+        }
         return "proc-1";
+      }
       case "process.write": {
         // Assert rather than coerce: if the extension ever writes a non-string
         // here it is a real bug in the client, and `String()` would paper over

@@ -163,8 +163,21 @@
 [data-settings-panel] select:focus-visible,
 [data-settings-panel] button:focus-visible,
 [data-search-overlay] input:focus-visible,
-[data-search-overlay] button:focus-visible {
+[data-search-overlay] button:focus-visible,
+/* Extension text inputs draw their own focus as an accent *border*, so the
+   global outline stacked a second hard rectangle on top of it. Only the inputs
+   opt out - see below for buttons, which still need a visible focus ring. */
+[data-extension-ui] textarea:focus-visible,
+[data-extension-ui] input:focus-visible {
   outline: none;
+}
+
+/* Extension buttons keep a focus ring, but a softer one: the global 2px inset
+   accent outline is sized for large editor surfaces and overwhelmed 24px icon
+   buttons in a 360px dock. */
+[data-extension-ui] button:focus-visible {
+  outline: 1px solid var(--accent, rgba(100, 149, 237, 0.7));
+  outline-offset: 1px;
 }
 
 html,
