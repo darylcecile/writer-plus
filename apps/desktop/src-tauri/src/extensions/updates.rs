@@ -211,7 +211,7 @@ pub fn install_record(extension_dir: &Path) -> Option<InstallRecord> {
 /// a user silently stuck on an old version forever. Non-numeric components
 /// (prerelease tags) sort *before* the release they qualify, matching semver:
 /// 1.0.0-beta is older than 1.0.0.
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
     let key = |v: &str| -> (Vec<u64>, bool) {
         let core = v.split(['-', '+']).next().unwrap_or(v);
         let parts: Vec<u64> = core

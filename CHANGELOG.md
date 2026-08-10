@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-10
+
+- The two built-in extensions now arrive with the app. Until now a fresh install started with an empty Extensions list: the AI chat panel and the semantic index that powers it existed in the source tree but were never actually present in a running build, so "Chat With Your Notes" was nowhere to be found on a machine that had not had them copied in by hand. They are now bundled into the app at build time and placed into your extensions folder on first launch, so they are there the first time you open Preferences → Extensions. They carry no update record and never phone GitHub for updates - a built-in is versioned by the app it ships inside, so it is refreshed only when a newer app carries a newer copy, and you are never silently downgraded. One caveat worth stating plainly: if you remove a built-in it will return on the next launch, because the chat extension depends on the index extension's search and the app treats both as part of itself for now.
+
 ## 2026-08-07
 
 - Extension interfaces now render completely. Two thirds of the components an extension is allowed to use had no drawing code behind them, so an extension using them drew nothing at all - including the citations under an AI answer, the one thing that makes a claim about your notes checkable. Every declared component now renders, and a test compares the two halves of that contract directly, so a component can no longer be offered to extensions without something to draw it. Alongside it, an extension's list search box was present but zero pixels wide, its action menu was see-through, and six colours it referenced were never defined anywhere - all of which passed every automated check and were only found by looking at the screen.

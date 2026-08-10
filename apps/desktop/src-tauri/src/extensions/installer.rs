@@ -160,7 +160,70 @@ pub fn commit(
         ));
     }
 
-    let id = &staged.candidate.manifest.id;
+    // The record is what the updater reads later to know where this extension
+    // came from and what version is installed.
+    let record = serde_json::to_vec_pretty(&InstallRecord {
+        repo: staged.candidate.repo.clone(),
+        version: staged.candidate.version.clone(),
+        bundle_sha256: staged.candidate.bundle_sha256.clone(),
+    })
+    .map_err(|e| AppError::Invalid(e.to_string()))?;
+
+    write_extension_atomically(
+        &staged.candidate.manifest.id,
+        &[
+            (MANIFEST_ASSET, staged.manifest_bytes.as_slice()),
+            (BUNDLE_ASSET, staged.bundle_bytes.as_slice()),
+            ("install.json", record.as_slice()),
+        ],
+        extensions_dir,
+    )
+}
+
+/// Install a first-party extension from bytes already on the machine.
+///
+/// This is how the core extensions the app ships get onto disk (see
+/// [`super::seed`]). Unlike [`commit`] it writes no `install.json`: a built-in
+/// is versioned by the app that carries it, not by a GitHub release, and a
+/// record pointing at a repository that does not exist would make the updater
+/// try to "update" it from nowhere. Deliberately reusing the same atomic write
+/// as `commit` keeps one on-disk install contract for every source.
+///
+/// The manifest is parsed and validated here so a corrupt shipped bundle fails
+/// loudly at seed time rather than silently loading with a broken manifest.
+pub fn install_local(
+    manifest_bytes: &[u8],
+    bundle_bytes: &[u8],
+    extensions_dir: &Path,
+) -> Result<PathBuf, AppError> {
+    let manifest: ExtensionManifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|e| AppError::Invalid(format!("{MANIFEST_ASSET} is not valid: {e}")))?;
+    manifest.validate()?;
+
+    write_extension_atomically(
+        &manifest.id,
+        &[
+            (MANIFEST_ASSET, manifest_bytes),
+            (BUNDLE_ASSET, bundle_bytes),
+        ],
+        extensions_dir,
+    )
+}
+
+/// Atomically place `files` (each a `(name, bytes)` pair) as the install for
+/// `id`, retiring any previous install first.
+///
+/// The write is atomic in the sense that matters: a fresh staging directory is
+/// fully populated and only then swapped into place, so a crash mid-install
+/// cannot leave a half-written extension that would load with a manifest and no
+/// code (or worse, new code under an old manifest's permissions). Every path
+/// that installs an extension - a consented GitHub `commit` and the first-run
+/// seed - funnels through here, so the staging convention exists once.
+fn write_extension_atomically(
+    id: &str,
+    files: &[(&str, &[u8])],
+    extensions_dir: &Path,
+) -> Result<PathBuf, AppError> {
     if !is_safe_dir_name(id) {
         return Err(AppError::Invalid(format!(
             "extension id {id:?} cannot be used as a folder name"
@@ -175,17 +238,9 @@ pub fn commit(
     }
     std::fs::create_dir_all(&staging_dir)?;
 
-    std::fs::write(staging_dir.join(MANIFEST_ASSET), &staged.manifest_bytes)?;
-    std::fs::write(staging_dir.join(BUNDLE_ASSET), &staged.bundle_bytes)?;
-    std::fs::write(
-        staging_dir.join("install.json"),
-        serde_json::to_vec_pretty(&InstallRecord {
-            repo: staged.candidate.repo.clone(),
-            version: staged.candidate.version.clone(),
-            bundle_sha256: staged.candidate.bundle_sha256.clone(),
-        })
-        .map_err(|e| AppError::Invalid(e.to_string()))?,
-    )?;
+    for (name, bytes) in files {
+        std::fs::write(staging_dir.join(name), bytes)?;
+    }
 
     // Retiring the old directory before the rename keeps the window in which
     // no extension exists as short as a rename, rather than as long as a
